@@ -1,0 +1,648 @@
+本节功能：开发接受Restful风格客户端请求的web服务模块。
+
+1.app 下仿照现有服务，开发api模块，专门处理restful风格请求
+    1) api模块目录结构
+    flasky
+        |- app
+            |. __init__.py
+            |. authentication.py
+            |. comments.py
+            |. decorators.py
+            |. errors.py
+            |. posts.py
+            |. users.py
+        |. exceptions.py
+
+    2）编辑 api 模块蓝本
+    flasky/app/api/__init__.py
+    ----------------------------------------------------------------------
+    from flask import Blueprint
+
+    api = Blueprint('api', __name__)
+
+    # 参照前面的 auth 和 main 蓝本，自动映入需要暴露的模块，且应该在最后暴露，以免 authentication, posts, users, comments, errors
+    # 中也引入了 api 造成循环引用问题
+    from . import authentication, posts, users, comments, errors
+
+    ----------------------------------------------------------------------
+
+    3) 权限鉴定
+    flasky/app/api/authentication.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    from flask import g, jsonify # g 全局变量，每次请求都会重置, jsonify flask-web 专用序列化模块
+    from flask_httpauth import HTTPBasicAuth # 加密模块 @auth.login_required 就会走加密通道
+    from ..models import User
+    from . import api # 导入蓝本
+    from .errors import unauthorized, forbidden # 自定义的异常
+
+    auth = HTTPBasicAuth()
+
+    @auth.verify_password #
+    def verify_password(email_or_token, password):
+        if email_or_token == '': # 未带入token 或 user:pwd
+            return False
+        if password == '': # 代入token
+            g.current_user = User.verify_auth_token(email_or_token) # 查找当前用户是否存在，如存在绑定到全局变量
+            g.token_used = True # 全局变量标记已经使用token
+            return g.current_user is not None # verify_auth_token 成功提取用户，则标记是授信用户，鉴权通过
+        user = User.query.filter_by(email=email_or_token).first() # 基于email提取用户
+        if not user: # 未找到，返回false
+            return False
+        g.current_user = user
+        g.token_used = False # 标记未使用token
+        return user.verify_password(password) # 比对 email 的 pwd
+
+
+    @auth.error_handler
+    def auth_error():
+        return unauthorized('Invalid credentials') # 无效凭据，tolen 失效
+
+
+    @api.before_request
+    @auth.login_required
+    def before_request():
+        if not g.current_user.is_anonymous and \
+                not g.current_user.confirmed:
+            return forbidden('Unconfirmed account') # 登录但未激活，弹到激活页
+
+
+    @api.route('/tokens/', methods=['POST'])
+    def get_token(): # 申请tokens
+        print(g.token_used)
+        if g.current_user.is_anonymous or g.token_used: # 匿名用户，或已经使用了token 不能再次申请
+            return unauthorized('Invalid credentials')
+        # 创建 token 返回，token 内部封装了改用户的 id 生命周期默认 1h
+        return jsonify({'token': g.current_user.generate_auth_token(expiration=3600), 'expiration': 3600})
+
+    ----------------------------------------------------------------------
+
+    4). 异常处理器
+    flasky/app/api/errors.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    from flask import jsonify
+    from app.exceptions import ValidationError
+    from . import api
+
+
+    def bad_request(message):
+        response = jsonify({'error': 'bad request', 'message': message})
+        response.status_code = 400
+        return response
+
+
+    def unauthorized(message):
+        response = jsonify({'error': 'unauthorized', 'message': message})
+        response.status_code = 401
+        return response
+
+
+    def forbidden(message):
+        response = jsonify({'error': 'forbidden', 'message': message})
+        response.status_code = 403
+        return response
+
+
+    @api.errorhandler(ValidationError)
+    def validation_error(e):
+        return bad_request(e.args[0])
+
+    ----------------------------------------------------------------------
+
+    5).编辑全局异常类（自定义异常，避免页面之间捕获工程异常信息）
+    flasky/app/exceptions.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    class ValidationError(ValueError):
+        pass
+
+    ----------------------------------------------------------------------
+
+
+    6). 视图层权限声明装饰器
+    flasky/app/api/decorators.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    from functools import wraps
+    from flask import g
+    from .errors import forbidden
+
+    # 视图层权限声明装饰器
+    def permission_required(permission):
+        def decorator(f):
+            @wraps(f)
+            def decorated_function(*args, **kwargs):
+                # 与web请求不同 rest请求是无状态的，每天 current_user 对象，只能借助每次请求的全局变量存储 用户信息，请求接受 g 被销毁，下次请求重置
+                if not g.current_user.can(permission):
+                    return forbidden('Insufficient permissions')
+                return f(*args, **kwargs)
+            return decorated_function
+        return decorator
+
+    ----------------------------------------------------------------------
+
+    7).模型优化
+    flasky/app/models.py
+    ----------------------------------------------------------------------
+    from .exceptions import ValidationError
+    ...
+
+    class Comment(db.Model):
+
+        def to_json(self):
+        		# 当前评论信息转换为json 输出
+        		json_comment = {
+        			'url': url_for('api.get_comment', id=self.id),
+        			'post_url': url_for('api.get_post', id=self.post_id),
+        			'body': self.body,
+        			'body_html': self.body_html,
+        			'timestamp': self.timestamp,
+        			'author_url': url_for('api.get_user', id=self.author_id),
+        			}
+        		return json_comment
+
+        @staticmethod
+        def from_json(json_comment):
+            # 将 json 数据封装成 评论对象
+            body = json_comment.get('body')
+            if body is None or body == '':
+                raise ValidationError('comment does not have a body')
+            return Comment(body=body)
+
+
+    class Post(db.Model):
+        ...
+        def to_json(self):
+        		json_post = {
+        			'url': url_for('api.get_post', id=self.id),
+        			'body': self.body,
+        			'body_html': self.body_html,
+        			'timestamp': self.timestamp,
+        			'author_url': url_for('api.get_user', id=self.author_id),
+        			'comments_url': url_for('api.get_post_comments', id=self.id),
+        			'comment_count': self.comments.count()
+        			}
+        		return json_post
+
+        @staticmethod
+        def from_json(json_post):
+            body = json_post.get('body')
+            if body is None or body == '':
+                raise ValidationError('post does not have a body')
+            return Post(body=body)
+
+
+    class User(UserMixin, db.Model):
+        ...
+        def to_json(self):
+        		json_user = {
+        			'url': url_for('api.get_user', id=self.id),
+        			'username': self.username,
+        			'member_since': self.member_since,
+        			'last_seen': self.last_seen,
+        			'posts_url': url_for('api.get_user_posts', id=self.id),
+        			'followed_posts_url': url_for('api.get_user_followed_posts',
+        			                              id=self.id),
+        			'post_count': self.posts.count()
+        			}
+        		return json_user
+
+        def generate_confirmation_token(self, expiration=3600):
+            # 对当前授信用户创建 激活 token,token 中封装的是加密后的id
+            s = Serializer(current_app.config['SECRET_KEY'], expiration)
+            return s.dumps({'confirm': self.id}).decode('utf-8')
+
+        def generate_reset_token(self, expiration=3600):
+            # 对当前授信用户创建 密码重置 token,token 中封装的是加密后的id
+            s = Serializer(current_app.config['SECRET_KEY'], expiration)
+            return s.dumps({'reset': self.id}).decode('utf-8')
+
+        def generate_email_change_token(self, new_email, expiration=3600):
+            # 对当前授信用户创建 邮箱修改token,token 中封装的是加密后的id
+            s = Serializer(current_app.config['SECRET_KEY'], expiration)
+            return s.dumps({'change_email': self.id, 'new_email': new_email}).decode('utf-8')
+
+        def generate_auth_token(self, expiration):
+            # 对当前授信用户创建访问授信token,token 中封装的是加密后的id
+            s = Serializer(current_app.config['SECRET_KEY'],expires_in=expiration)
+            return s.dumps({'id': self.id}).decode('utf-8')
+
+        @staticmethod
+        def verify_auth_token(token):
+            # 解析 token 的id, 查找用户返回，未找到返回None
+            s = Serializer(current_app.config['SECRET_KEY'])
+            try:
+                data = s.loads(token)
+            except:
+                return None
+            return User.query.get(data['id'])
+
+    ----------------------------------------------------------------------
+
+    8).视图页
+    flasky/app/api/users.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    from flask import jsonify, request, current_app, url_for
+    from . import api
+    from ..models import User, Post
+
+
+    @api.route('/users/<int:id>')
+    def get_user(id):
+        # 获取给定id 的用户信息
+        user = User.query.get_or_404(id)
+        return jsonify(user.to_json())
+
+
+    # ttp://127.0.0.1:5000/api/v1.0/users/15/posts/?page=1 分页，必须在posts 后带'/'
+    @api.route('/users/<int:id>/posts/')
+    def get_user_posts(id):
+        # 获取指定id 用户的全部文章
+        user = User.query.get_or_404(id)
+        page = request.args.get('page', 1, type=int)
+        pagination = user.posts.order_by(Post.timestamp.desc()).paginate(
+            page, per_page=current_app.config['FLASKY_POSTS_PER_PAGE'],
+            error_out=False)
+        posts = pagination.items
+        prev = None
+        if pagination.has_prev:
+            prev = url_for('api.get_user_posts', id=id, page=page-1)
+        next = None
+        if pagination.has_next:
+            next = url_for('api.get_user_posts', id=id, page=page+1)
+        return jsonify({
+            'posts': [post.to_json() for post in posts],
+            'prev': prev,
+            'next': next,
+            'count': pagination.total
+        })
+
+
+    # 获取关注的文章
+    @api.route('/users/<int:id>/timeline/')
+    def get_user_followed_posts(id):
+        user = User.query.get_or_404(id)
+        page = request.args.get('page', 1, type=int)
+        pagination = user.followed_posts.order_by(Post.timestamp.desc()).paginate(
+            page, per_page=current_app.config['FLASKY_POSTS_PER_PAGE'],
+            error_out=False)
+        posts = pagination.items
+        prev = None
+        if pagination.has_prev:
+            prev = url_for('api.get_user_followed_posts', id=id, page=page-1)
+        next = None
+        if pagination.has_next:
+            next = url_for('api.get_user_followed_posts', id=id, page=page+1)
+        return jsonify({
+            'posts': [post.to_json() for post in posts],
+            'prev': prev,
+            'next': next,
+            'count': pagination.total
+        })
+
+    ----------------------------------------------------------------------
+
+    flasky/app/api/posts.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    from flask import jsonify, request, g, url_for, current_app
+    from .. import db
+    from ..models import Post, Permission
+    from . import api
+    from .decorators import permission_required
+    from .errors import forbidden
+
+
+    @api.route('/posts/')
+    def get_posts():
+        # 获取全部文章
+        page = request.args.get('page', 1, type=int)
+        pagination = Post.query.paginate(
+            page, per_page=current_app.config['FLASKY_POSTS_PER_PAGE'],
+            error_out=False)
+        posts = pagination.items
+        prev = None
+        if pagination.has_prev:
+            prev = url_for('api.get_posts', page=page-1)
+        next = None
+        if pagination.has_next:
+            next = url_for('api.get_posts', page=page+1)
+        return jsonify({
+            'posts': [post.to_json() for post in posts],
+            'prev': prev,
+            'next': next,
+            'count': pagination.total
+        })
+
+
+    # http://127.0.0.1:5000/api/v1.0/posts/19
+    @api.route('/posts/<int:id>')
+    def get_post(id):
+        # 获取指定 id 的文章
+        post = Post.query.get_or_404(id)
+        return jsonify(post.to_json())
+
+
+    # (venv) huhao:flasky huhao$ http --json --auth joseph68@example.com:cat POST  http://127.0.0.1:5000/api/v1.0/posts/ \
+    # > "body=hahaha"
+    @api.route('/posts/', methods=['POST'])
+    @permission_required(Permission.WRITE)
+    def new_post():
+        # 添加新文章
+        post = Post.from_json(request.json)
+        post.author = g.current_user
+        db.session.add(post)
+        db.session.commit()
+        return jsonify(post.to_json()), 201, {'Location': url_for('api.get_post', id=post.id)} # 重定向请求 api.get_post
+
+    # (venv) huhao:flasky huhao$ http --json --auth joseph68@example.com:cat PUT http://127.0.0.1:5000/api/v1.0/posts/106 "body=wahahaha"
+    @api.route('/posts/<int:id>', methods=['PUT'])
+    @permission_required(Permission.WRITE)
+    def edit_post(id):
+        # 修改
+        post = Post.query.get_or_404(id)
+        if g.current_user != post.author and \
+                not g.current_user.can(Permission.ADMIN):
+            return forbidden('Insufficient permissions')
+        post.body = request.json.get('body', post.body)
+        db.session.add(post)
+        db.session.commit()
+        return jsonify(post.to_json())
+
+    ----------------------------------------------------------------------
+
+    flasky/app/api/comments.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    from flask import jsonify, request, g, url_for, current_app
+    from .. import db
+    from ..models import Post, Permission, Comment
+    from . import api
+    from .decorators import permission_required
+
+
+    @api.route('/comments/')
+    def get_comments():
+        # 获取全部评论
+        page = request.args.get('page', 1, type=int)
+        pagination = Comment.query.order_by(Comment.timestamp.desc()).paginate(
+            page, per_page=current_app.config['FLASKY_COMMENTS_PER_PAGE'],
+            error_out=False)
+        comments = pagination.items
+        prev = None
+        if pagination.has_prev:
+            prev = url_for('api.get_comments', page=page-1)
+        next = None
+        if pagination.has_next:
+            next = url_for('api.get_comments', page=page+1)
+        return jsonify({
+            'comments': [comment.to_json() for comment in comments],
+            'prev': prev,
+            'next': next,
+            'count': pagination.total
+        })
+
+
+    @api.route('/comments/<int:id>')
+    def get_comment(id):
+        # 获取指定评论
+        comment = Comment.query.get_or_404(id)
+        return jsonify(comment.to_json())
+
+
+    @api.route('/posts/<int:id>/comments/')
+    def get_post_comments(id):
+        # 获取指定文章全部评论
+        post = Post.query.get_or_404(id)
+        page = request.args.get('page', 1, type=int)
+        pagination = post.comments.order_by(Comment.timestamp.asc()).paginate(
+            page, per_page=current_app.config['FLASKY_COMMENTS_PER_PAGE'],
+            error_out=False)
+        comments = pagination.items
+        prev = None
+        if pagination.has_prev:
+            prev = url_for('api.get_post_comments', id=id, page=page-1)
+        next = None
+        if pagination.has_next:
+            next = url_for('api.get_post_comments', id=id, page=page+1)
+        return jsonify({
+            'comments': [comment.to_json() for comment in comments],
+            'prev': prev,
+            'next': next,
+            'count': pagination.total
+        })
+
+
+    @api.route('/posts/<int:id>/comments/', methods=['POST'])
+    @permission_required(Permission.COMMENT)
+    def new_post_comment(id):
+        # 添加新评论
+        post = Post.query.get_or_404(id)
+        comment = Comment.from_json(request.json)
+        comment.author = g.current_user
+        comment.post = post
+        db.session.add(comment)
+        db.session.commit()
+        return jsonify(comment.to_json()), 201, \
+            {'Location': url_for('api.get_comment', id=comment.id)} # 重定向
+
+    ----------------------------------------------------------------------
+
+    9）.注控制器，注册 api 蓝本
+    flasky/app/__init__.py
+    ----------------------------------------------------------------------
+    def create_app(config_name):
+        from .api import api as api_blueprint
+            app.register_blueprint(api_blueprint, url_prefix='/api/v1.0') # 此处直接决定请求命名空间
+    ----------------------------------------------------------------------
+
+    10) 修改 主路由器异常模块(添加json功能)
+    flasky/app/main/errors.py
+    ----------------------------------------------------------------------
+    from flask import render_template, request, jsonify
+    from . import main
+
+    @main.app_errorhandler(403)
+    def forbidden(e):
+    	if request.accept_mimetypes.accept_json and \
+    			not request.accept_mimetypes.accept_html:
+    		response = jsonify({'error': 'forbidden'})
+    		response.status_code = 403
+    		return response
+    	return render_template('403.html'), 403
+
+
+    @main.app_errorhandler(404)
+    def page_not_found(e):
+    	if request.accept_mimetypes.accept_json and \
+    			not request.accept_mimetypes.accept_html:
+    		response = jsonify({'error': 'not found'})
+    		response.status_code = 404
+    		return response
+    	return render_template('404.html'), 404
+
+
+    @main.app_errorhandler(500)
+    def internal_server_error(e):
+    	if request.accept_mimetypes.accept_json and \
+    			not request.accept_mimetypes.accept_html:
+    		response = jsonify({'error': 'internal server error'})
+    		response.status_code = 500
+    		return response
+    	return render_template('500.html'), 500
+
+    ----------------------------------------------------------------------
+
+
+2.测试
+    1).安装 httpie 测试环境
+    (venv) huhao:flasky huhao$ pip install httpie
+
+    2).基础测试
+    # 获取指定评论
+    $ http --json --auth joseph68@example.com:cat GET http://127.0.0.1:5000/api/v1.0/comments/16
+    HTTP/1.0 200 OK
+    Content-Length: 204
+    Content-Type: application/json
+    Date: Wed, 29 Aug 2018 14:33:37 GMT
+    Server: Werkzeug/0.14.1 Python/2.7.14rc1
+
+    {
+        "author_url": "/api/v1.0/users/20",
+        "body": "aa5",
+        "body_html": "aa5",
+        "post_url": "/api/v1.0/posts/104",
+        "timestamp": "Wed, 29 Aug 2018 10:18:18 GMT",
+        "url": "/api/v1.0/comments/16"
+    }
+
+    # 获取全部评论，注意是'comments/'
+    (venv) huhao:flasky huhao$ http --json --auth joseph68@example.com:cat GET http://127.0.0.1:5000/api/v1.0/comments/
+    HTTP/1.0 200 OK
+    Content-Length: 1292
+    Content-Type: application/json
+    Date: Wed, 29 Aug 2018 14:39:09 GMT
+    Server: Werkzeug/0.14.1 Python/2.7.14rc1
+
+    {
+        "comments": [
+            {
+                "author_url": "/api/v1.0/users/20",
+                "body": "shit",
+                "body_html": "shit",
+                "post_url": "/api/v1.0/posts/102",
+                "timestamp": "Wed, 29 Aug 2018 11:35:58 GMT",
+                "url": "/api/v1.0/comments/20"
+            },
+            {
+                "author_url": "/api/v1.0/users/20",
+                "body": "aaaa1",
+                "body_html": "aaaa1",
+                "post_url": "/api/v1.0/posts/103",
+                "timestamp": "Wed, 29 Aug 2018 11:33:27 GMT",
+                "url": "/api/v1.0/comments/19"
+            },
+    ....
+    }
+
+    # 获取 token
+    (venv) huhao:flasky huhao$ http --json --auth joseph68@example.com:cat POST http://127.0.0.1:5000/api/v1.0/tokens/
+    HTTP/1.0 200 OK
+    Content-Length: 164
+    Content-Type: application/json
+    Date: Wed, 29 Aug 2018 14:40:26 GMT
+    Server: Werkzeug/0.14.1 Python/2.7.14rc1
+
+    {
+        "expiration": 3600,
+        "token": "eyJhbGciOiJIUzI1NiIsImV4cCI6MTUzNTU1NzIyNiwiaWF0IjoxNTM1NTUzNjI2fQ.eyJpZCI6MjB9.eqEUcgbb-h0vjOPyzAGJJc9OIZbxO28_J-VWxrqsGr0"
+    }
+
+    # 基于 token 访问
+    (venv) huhao:flasky huhao$ http --json --auth eyJhbGciOiJIUzI1NiIsImV4cCI6MTUzNTU1NzIyNiwiaWF0IjoxNTM1NTUzNjI2fQ.eyJpZCI6MjB9.eqEUcgbb-h0vjOPyzAGJJc9OIZbxO28_J-VWxrqsGr0: GET http://127.0.0.1:5000/api/v1.0/posts/
+    HTTP/1.0 200 OK
+    Content-Length: 9091
+    Content-Type: application/json
+    Date: Wed, 29 Aug 2018 14:41:23 GMT
+    Server: Werkzeug/0.14.1 Python/2.7.14rc1
+
+    {
+        "count": 106,
+        "next": "/api/v1.0/posts/?page=2",
+        "posts": [
+            {
+                "author_url": "/api/v1.0/users/49",
+                "body": "Vestibulum sed magna at nunc commodo placerat. Nam nulla. Sed accumsan felis.",
+                "body_html": "<p>Vestibulum sed magna at nunc commodo placerat. Nam nulla. Sed accumsan felis.</p>",
+                "comment_count": 0,
+                "comments_url": "/api/v1.0/posts/1/comments/",
+                "timestamp": "Sun, 26 Aug 2018 00:00:00 GMT",
+                "url": "/api/v1.0/posts/1"
+            },
+    ...
+    }

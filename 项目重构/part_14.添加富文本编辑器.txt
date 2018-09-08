@@ -1,0 +1,110 @@
+本节功能：添加富文本编辑器，可视化发布并展示博客。
+
+1.安装环境
+    (venv) huhao:flasky huhao$ pip install flask-pagedown markdown bleach
+
+2.修改Post模型
+    flasky/app/models.py
+    ------------------------------------------------------------------------------------------------
+    class Post(db.Model):
+    	# 博客
+    	__tablename__ = 'posts'
+    	id = db.Column(db.Integer, primary_key=True)
+    	body = db.Column(db.Text) # 长文本类型
+    	body_html = db.Column(db.Text) # 页面markdown模块直接传入的html格式的bolg，稍后入库，会执行清洗操作，只保留授信标签
+    	timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow) # 默认提交时间，默认为当前操作时间
+    	author_id = db.Column(db.Integer, db.ForeignKey('users.id')) # 外键
+
+    	@staticmethod
+    	def on_changed_body(target, value, oldvalue, initiator):
+    		# 一旦往库插入记录，就执行替换逻辑，
+    		allowed_tags = ['a', 'abbr', 'acronym', 'b', 'blockquote', 'code','em', 'i', 'li', 'ol', 'pre', 'strong', 'ul','h1', 'h2', 'h3', 'p']
+    		target.body_html = bleach.linkify(bleach.clean(markdown(value, output_format='html'),tags=allowed_tags, strip=True))
+
+    	# 模拟数据
+    	@staticmethod
+    	def generate_fake(count=100):
+    		from sqlalchemy.exc import IntegrityError
+    		from random import seed, randint
+    		import forgery_py
+    		seed()
+    		user_count = User.query.count()
+    		for i in range(count):
+    			u = User.query.offset(randint(0, user_count - 1)).first()
+    			p = Post(body=forgery_py.lorem_ipsum.sentences(randint(1, 3)),
+    			         timestamp=forgery_py.date.date(True),author=u)
+    			db.session.add(u)
+    			try:
+    				db.session.commit()
+    			except IntegrityError:
+    				db.session.rollback()
+
+    db.event.listen(Post.body, 'set', Post.on_changed_body) # db 库绑定监听事件
+
+    ------------------------------------------------------------------------------------------------
+
+
+3.修改 发布页 html 模板，添加markdown 动态展示模块
+    flasky/app/templates/index.html
+    ------------------------------------------------------------------------------------------------
+    ...
+    {% block scripts %}
+        {{ super() }}
+        {{ pagedown.include_pagedown() }}
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+4.修改 profile 内嵌 _posts.html 页，添加 markdown 回显模块
+    flasky/app/templates/_posts.html
+    ------------------------------------------------------------------------------------------------
+    <ul class="posts">
+        {% for post in posts %} <li class="post">
+            <div class="profile-thumbnail">
+                <a href="{{ url_for('.user', username=post.author.username) }}">
+                    <img class="img-rounded profile-thumbnail" src="{{ post.author.gravatar(size=40) }}">
+                </a>
+            </div>
+            <div class="post-date">{{ moment(post.timestamp).fromNow() }}</div>
+            <div class="post-author">
+                <a href="{{ url_for('.user', username=post.author.username) }}">
+                    {{ post.author.username }}
+                </a> </div>
+            <div class="post-body">   <!-- markdown -->
+                {% if post.body_html %}
+                    {{ post.body_html | safe }}
+                {% else %}
+                    {{ post.body }}
+                {% endif %}
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+    ------------------------------------------------------------------------------------------------
+
+5.修改主控蓝本，注册 markdown 模块
+    flasky/app/__init__.py
+    ------------------------------------------------------------------------------------------------
+    from flask_pagedown import PageDown
+    ...
+    pagedown = PageDown()
+    ...
+    def create_app(config_name):
+        ...
+        pagedown.init_app(app)
+        ...
+
+    ------------------------------------------------------------------------------------------------
+
+
+6.修改 Post表单模型，引用 PageDownField
+    flasky/app/main/forms.py
+    ------------------------------------------------------------------------------------------------
+    class PostForm(FlaskForm):
+    	body = PageDownField("What's on your mind?", validators=[DataRequired()])
+    	submit = SubmitField('Submit')
+
+    ------------------------------------------------------------------------------------------------
+
+7.web测试
+    启动web,正常登录，然后尝试发布博客，即可看到markdown 动态效果。进入profile 页，可看到markdown效果的博客

@@ -1,0 +1,418 @@
+本节功能：对注册用户基于角色授权。
+
+1.编辑Permission 模型
+    flasky/app/models.py
+    ------------------------------------------------------------------------------------------------
+    from flask_login import UserMixin,AnonymousUserMixin
+    ....
+
+    class Permission:
+    	FOLLOW = 1
+    	COMMENT = 2
+    	WRITE = 4
+    	MODERATE = 8
+    	ADMIN = 16
+
+    class Role(db.Model):
+        __tablename__ = 'roles'
+        id = db.Column(db.Integer, primary_key=True)
+        name = db.Column(db.String(64), unique=True)
+        default = db.Column(db.Boolean, default=False, index=True)
+        permissions = db.Column(db.Integer)
+        users = db.relationship('User', backref='role', lazy='dynamic')
+
+        def __init__(self, **kwargs):
+            super(Role, self).__init__(**kwargs)
+            if self.permissions is None:
+                self.permissions = 0
+
+        @staticmethod
+        def insert_roles():
+            roles = {
+                'User': [Permission.FOLLOW, Permission.COMMENT, Permission.WRITE],
+                'Moderator': [Permission.FOLLOW, Permission.COMMENT,
+                              Permission.WRITE, Permission.MODERATE],
+                'Administrator': [Permission.FOLLOW, Permission.COMMENT,
+                                  Permission.WRITE, Permission.MODERATE,
+                                  Permission.ADMIN],
+                }
+            default_role = 'User'
+            for r in roles:
+                role = Role.query.filter_by(name=r).first()
+                if role is None:
+                    role = Role(name=r)
+                role.reset_permissions()
+                for perm in roles[r]:
+                    role.add_permission(perm)
+                role.default = (role.name == default_role)
+                db.session.add(role)
+            db.session.commit()
+
+        def add_permission(self, perm):
+            if not self.has_permission(perm):
+                self.permissions += perm
+
+        def remove_permission(self, perm):
+            if self.has_permission(perm):
+                self.permissions -= perm
+
+        def reset_permissions(self):
+            self.permissions = 0
+
+        def has_permission(self, perm):
+            return self.permissions & perm == perm
+
+        def __repr__(self):
+            return '<Role %r>' % self.name
+
+    class User(UserMixin, db.Model):
+        ...
+        def can(self, perm):
+        		return self.role is not None and self.role.has_permission(perm)
+
+        def is_administrator(self):
+            return self.can(Permission.ADMIN)
+
+    ------------------------------------------------------------------------------------------------
+
+
+2. 设置 主控蓝本匿名用户为 AnonymousUser 类型
+    flasky/app/__init__.py
+    ------------------------------------------------------------------------------------------------
+    def create_app(config_name):
+    	app = Flask(__name__)
+    	app.config.from_object(config[config_name])
+    	config[config_name].init_app(app)
+
+    	bootstrap.init_app(app)
+    	mail.init_app(app)
+    	moment.init_app(app)
+    	db.init_app(app)
+    	login_manager.init_app(app)
+
+    	from app.models import User,AnonymousUser   # <<<<
+    	@login_manager.user_loader
+    	def load_user(user_id):
+    		return User.query.get(int(user_id))
+    	login_manager.anonymous_user = AnonymousUser  # <<<<
+
+    	from .main import main as main_blueprint
+    	app.register_blueprint(main_blueprint)
+
+    	from .auth import auth as auth_blueprint
+    	app.register_blueprint(auth_blueprint, url_prefix='/auth')
+
+    	return app
+
+    ------------------------------------------------------------------------------------------------
+
+
+3. 编辑 业务注模块蓝本，将Permission 类加入上下文模板
+    flasky/app/main/__init__.py
+    ------------------------------------------------------------------------------------------------
+    from ..models import Permission
+
+    @main.app_context_processor
+    def inject_permissions():
+    	return dict(Permission=Permission)
+
+    ------------------------------------------------------------------------------------------------
+
+3.编写 权限装饰器
+    flasky/app/decorators.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/28'
+    Info:
+
+    """
+    from functools import wraps
+    from flask import abort
+    from flask_login import current_user
+    from models import Permission
+
+    def permission_required(permission): # 装饰在控制函数上，perminssion 为访问函数需要的权限
+    	def decorator(f):
+    		@wraps(f)
+    		def decorated_function(*args, **kwargs):
+    			if not current_user.can(permission): # 无权限，则抛出 403 "禁止访问"异常
+    				abort(403) # 无权限，禁止操作
+    			return f(*args, **kwargs)
+    		return decorated_function
+    	return decorator
+
+
+    def admin_required(f): # 需要住宿需要管理员权限
+    	return permission_required(Permission.ADMINISTER)(f)
+
+    ------------------------------------------------------------------------------------------------
+
+
+4. 编写 403 "Forbidden" 禁止访问 html 模板
+    flasky/app/templates/403.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+
+    {% block title %}Flasky - Forbidden{% endblock %}
+
+    {% block page_content %}
+    <div class="page-header">
+        <h1>Forbidden</h1>
+    </div>
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+
+5.编写单元测试类
+    flasky/tests/test_user_model.py
+    ------------------------------------------------------------------------------------------------
+    from app.models import User,Role,Permission,AnonymousUser
+    ...
+
+    	def setUp(self):
+    		self.app = create_app('testing')
+    		self.app_context = self.app.app_context()
+    		self.app_context.push()
+    		db.create_all()
+    		Role.insert_roles() # 此处必须对 roles 表进行初始化，否则会报 auto_flush 异常
+
+    	def tearDown(self):
+    		db.session.remove()
+    		db.drop_all()
+    		self.app_context.pop()
+
+    	def test_password_setter(self):
+    		# 测试 password_hash 不为空
+    		u = User(password='cat')
+    		self.assertTrue(u.password_hash is not None)
+
+    	def test_no_password_getter(self):
+    		# 测试不能直接明文访问 password 字段
+    		u = User(password='cat')
+    		with self.assertRaises(AttributeError):
+    			u.password
+
+    	def test_password_verification(self):
+    		# password hash 加密对比
+    		u = User(password='cat')
+    		self.assertTrue(u.verify_password('cat'))
+    		self.assertFalse(u.verify_password('dog'))
+
+    	def test_password_salts_are_random(self):
+    		# hash 盐值是随机分配的，不同对象即便密码相同，hash 加密后值也是不同的
+    		u = User(password='cat')
+    		u2= User(password='cat')
+    		self.assertTrue(u.password_hash != u2.password_hash)
+
+    	def test_invalid_confirmation_token(self):
+    		# 测试无效激活码
+    		u1 = User(password='cat')
+    		u2 = User(password='dog')
+    		db.session.add(u1)
+    		db.session.add(u2)
+    		db.session.commit() # 保存两个用户到数据库
+    		token = u1.generate_confirmation_token() # 取出u1的id加密后的token
+    		self.assertFalse(u2.confirm(token)) # u2 的id 与 u1 的进行匹配
+
+    	def test_expired_confirmation_token(self):
+    		# 测试激活过期策略
+    		u = User(password='cat')
+    		db.session.add(u)
+    		db.session.commit()
+    		token = u.generate_confirmation_token(1)
+    		time.sleep(2)
+    		self.assertFalse(u.confirm(token))
+
+    	def test_valid_reset_token(self):
+    		# 测试密码重置
+    		u = User(password='cat')
+    		db.session.add(u)
+    		db.session.commit()
+    		token = u.generate_reset_token()
+    		self.assertTrue(User.reset_password(token, 'dog'))
+    		self.assertTrue(u.verify_password('dog'))
+
+    	def test_invalid_reset_token(self):
+    		# 重置密码过程，token 被篡改
+    		u = User(password='cat')
+    		db.session.add(u)
+    		db.session.commit()
+    		token = u.generate_reset_token()
+    		self.assertFalse(User.reset_password(token + 'a', 'horse'))
+    		self.assertTrue(u.verify_password('cat'))
+
+    	def test_valid_email_change_token(self):
+    		# 修改绑定邮件
+    		u = User(email='john@example.com', password='cat')
+    		db.session.add(u)
+    		db.session.commit()
+    		token = u.generate_email_change_token('susan@example.org')
+    		self.assertTrue(u.change_email(token))
+    		self.assertTrue(u.email == 'susan@example.org')
+
+    	def test_invalid_email_change_token(self):
+    		# 密码不匹配，修改绑定邮件不通过
+    		u1 = User(email='john@example.com', password='cat')
+    		u2 = User(email='susan@example.org', password='dog')
+    		db.session.add(u1)
+    		db.session.add(u2)
+    		db.session.commit()
+    		token = u1.generate_email_change_token('david@example.net')
+    		self.assertFalse(u2.change_email(token))
+    		self.assertTrue(u2.email == 'susan@example.org')
+
+    	def test_duplicate_email_change_token(self):
+    		# 邮箱已被使用，禁止绑定或注册
+    		u1 = User(email='john@example.com', password='cat')
+    		u2 = User(email='susan@example.org', password='dog')
+    		db.session.add(u1)
+    		db.session.add(u2)
+    		db.session.commit()
+    		token = u2.generate_email_change_token('john@example.com')
+    		self.assertFalse(u2.change_email(token))
+    		self.assertTrue(u2.email == 'susan@example.org')
+
+    	def test_user_role(self):
+    		# 非 admin 账号映射的邮箱，一律按普通用户授权，无评论 MODERATE(协管员)，ADMIN（超级管理员）权限
+    		u = User(email='huhao1@conew.com', password='cat')
+    		self.assertTrue(u.can(Permission.FOLLOW))
+    		self.assertTrue(u.can(Permission.COMMENT))
+    		self.assertTrue(u.can(Permission.WRITE))
+    		self.assertFalse(u.can(Permission.MODERATE))
+    		self.assertFalse(u.can(Permission.ADMIN))
+
+    	def test_moderator_role(self):
+    		# Moderator 权限测试
+    		r = Role.query.filter_by(name='Moderator').first()
+    		u = User(email='huhao1@cmcm.com', password='cat', role=r)
+    		self.assertTrue(u.can(Permission.FOLLOW))
+    		self.assertTrue(u.can(Permission.COMMENT))
+    		self.assertTrue(u.can(Permission.WRITE))
+    		self.assertTrue(u.can(Permission.MODERATE))
+    		self.assertFalse(u.can(Permission.ADMIN))
+
+    	def test_administrator_role(self):
+    		# Administrator 权限测试
+    		r = Role.query.filter_by(name='Administrator').first()
+    		u = User(email='huhao1@cmcm.com', password='cat', role=r)
+    		self.assertTrue(u.can(Permission.FOLLOW))
+    		self.assertTrue(u.can(Permission.COMMENT))
+    		self.assertTrue(u.can(Permission.WRITE))
+    		self.assertTrue(u.can(Permission.MODERATE))
+    		self.assertTrue(u.can(Permission.ADMIN))
+
+    	def test_anonymous_user(self):
+    		# 匿名用户无任何权限
+    		u = AnonymousUser()
+    		self.assertFalse(u.can(Permission.FOLLOW))
+    		self.assertFalse(u.can(Permission.COMMENT))
+    		self.assertFalse(u.can(Permission.WRITE))
+    		self.assertFalse(u.can(Permission.MODERATE))
+    		self.assertFalse(u.can(Permission.ADMIN))
+
+    ------------------------------------------------------------------------------------------------
+
+
+6.数据模型改动同步到数据库
+     # 进入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    # 生成迁移脚本
+    (venv) huhao:flasky huhao$ python manage.py db migrate -m 'change permission'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added table 'roles'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_roles_default' on '['default']'
+    INFO  [alembic.autogenerate.compare] Detected added table 'users'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_users_email' on '['email']'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_users_username' on '['username']'
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/e2ae8935feda_change_permission.py ... done
+
+    # 执行往数据库同步迁移命令
+    (venv) huhao:flasky huhao$ python manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running upgrade d7cc58f73ba8 -> e2ae8935feda, change permission
+
+    # 检测是否同步成功
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> str(Role.query)
+    'SELECT roles.id AS roles_id, roles.name AS roles_name, roles."default" AS roles_default, roles.permissions AS roles_permissions \nFROM roles'
+    >>> Role.insert_roles()  # roles 表初始化
+    >>> Role.query.all()
+    [<Role u'Moderator'>, <Role u'Administrator'>, <Role u'User'>]
+    >>> User.query.all()
+    []
+
+
+7.运行单元测试类
+    # 加载虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+    # 执行单元测试
+    (venv) huhao:flasky huhao$ python manage.py test_basic
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+    test_administrator_role (test_user_model.UserModelTestCase) ... ok
+    test_anonymous_user (test_user_model.UserModelTestCase) ... ok
+    test_duplicate_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_expired_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_reset_token (test_user_model.UserModelTestCase) ... ok
+    test_moderator_role (test_user_model.UserModelTestCase) ... ok
+    test_no_password_getter (test_user_model.UserModelTestCase) ... ok
+    test_password_salts_are_random (test_user_model.UserModelTestCase) ... ok
+    test_password_setter (test_user_model.UserModelTestCase) ... ok
+    test_password_verification (test_user_model.UserModelTestCase) ... ok
+    test_user_role (test_user_model.UserModelTestCase) ... ok
+    test_valid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_valid_reset_token (test_user_model.UserModelTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 17 tests in 8.209s
+
+    OK
+    (venv) huhao:flasky huhao$
+
+
+8.web测试 (flasky/app/decorators.py permission_required 装饰器测试)
+    1).临时改动 flasky/app/main/views.py
+    ----------------------------------------------------------------------
+    from ..decorators import permission_required
+    from ..models import Permission
+    ...
+    @main.route('/')
+    @permission_required(Permission.ADMIN) # <<<
+    def index():
+    	return render_template('index.html')
+
+    ----------------------------------------------------------------------
+
+    2) 进入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    3) 运行web服务
+    (venv) huhao:flasky huhao$ ./manage.py runserver --host 127.0.0.1
+    ...
+
+    4) 访问主页 http://127.0.0.1:5000, 未登录状态，被重定向到 '403.html'页
+
+    5) 点击右上角 "LogIn" 登入，重新注册
+
+    6）注册完毕，由于使用的就是 Admin 默认邮件注册，直接分配了Administrator 权限，所有登录成功直接访问了Index 页面
+
+    7）flasky/app/main/views.py 代码复原
+
+
+
+
+
+
+
+
+

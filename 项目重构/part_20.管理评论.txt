@@ -1,0 +1,156 @@
+本节功能：Modetrator 协管员管理评论。
+
+1.base页导航栏，插入评论管理入口
+    flasky/app/templates/base.html
+    -------------------------------------------------------------------------
+    <ul class="nav navbar-nav navbar-right">
+        {% if current_user.can(Permission.MODERATE) %}   <!-- 如果具备协管权限就显示入口-->
+            <li><a href="{{ url_for('main.moderate') }}">Moderate Comments</a></li>
+        {% endif %}
+        {% if current_user.is_authenticated %}
+            <li class="dropdown">
+                <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+                    <img src="{{ current_user.gravatar(size=18) }}">
+                    Account <b class="caret"></b>
+                </a>
+                <ul class="dropdown-menu">
+                    <li><a href="{{ url_for('auth.change_password') }}">Change Password</a></li>
+                    <li><a href="{{ url_for('auth.change_email_request') }}">Change Email</a></li>
+                    <li><a href="{{ url_for('auth.logout') }}">Log Out</a></li>
+                </ul>
+            </li>
+        {% else %}
+            <li><a href="{{ url_for('auth.login') }}">Log In</a></li>
+        {% endif %}
+    </ul>
+
+    -------------------------------------------------------------------------
+
+
+2.评论管理页html模板
+    flasky/app/templates/moderate.html
+    -------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky - Comment Moderation{% endblock %}
+
+    {% block page_content %}
+    <div class="page-header">
+        <h1>Comment Moderation</h1>
+    </div>
+    {% set moderate = True %}
+    {% include '_comments.html' %}
+    {% if pagination %}
+    <div class="pagination">
+        {{ macros.pagination_widget(pagination, '.moderate') }}
+    </div>
+    {% endif %}
+    {% endblock %}
+
+    -------------------------------------------------------------------------
+
+
+3.Post页 评论内嵌页，添加协管按钮
+    flasky/app/templates/moderate.html
+    -------------------------------------------------------------------------
+    <ul class="comments">
+        {% for comment in comments %}
+            <li class="comment">
+                <div class="comment-thumbnail">
+                    <a href="{{ url_for('.user', username=comment.author.username) }}">
+                        <img class="img-rounded profile-thumbnail" src="{{ comment.author.gravatar(size=40) }}">
+                    </a>
+                </div>
+                <div class="comment-content">
+                    <div class="comment-date">{{ moment(comment.timestamp).fromNow() }}</div>
+                    <div class="comment-author"><a href="{{ url_for('.user', username=comment.author.username) }}">{{ comment.author.username }}</a></div>
+                    <div class="comment-body">
+                        {% if comment.disabled %}
+                            <p><i>This comment has been disabled by a moderator.</i></p>
+                        {% endif %}
+                        {% if moderate or not comment.disabled %}
+                            {% if comment.body_html %}
+                                {{ comment.body_html | safe }}
+                            {% else %}
+                                {{ comment.body }}
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                    {% if moderate %}
+                        <br>
+                        {% if comment.disabled %}  <!-- 禁止显示 -->
+                            <a class="btn btn-default btn-xs" href="{{ url_for('.moderate_enable', id=comment.id, page=page) }}">Enable</a>
+                        {% else %}
+                            <a class="btn btn-danger btn-xs" href="{{ url_for('.moderate_disable', id=comment.id, page=page) }}">Disable</a>
+                        {% endif %}
+                    {% endif %}
+                </div>
+            </li>
+        {% endfor %}
+    </ul>
+
+    -------------------------------------------------------------------------
+
+4.视图跳转
+    flasky/app/main/views.py
+    -------------------------------------------------------------------------
+    @main.route('/moderate') # index页进入协管页入口
+    @login_required
+    @permission_required(Permission.MODERATE) # 需要协管权限
+    def moderate():
+    	page = request.args.get('page', 1, type=int)
+    	pagination = Comment.query.order_by(Comment.timestamp.desc()).paginate(
+    			page, per_page=current_app.config['FLASKY_COMMENTS_PER_PAGE'],
+    			error_out=False)
+    	comments = pagination.items # 获取整个平台全部评论
+    	return render_template('moderate.html', comments=comments,pagination=pagination, page=page)
+
+
+    @main.route('/moderate/enable/<int:id>') # 开放评论显示
+    @login_required
+    @permission_required(Permission.MODERATE)
+    def moderate_enable(id):
+    	comment = Comment.query.get_or_404(id) # 未查找到该评论返回404
+    	comment.disabled = False # 打开显示
+    	db.session.add(comment) # 同步入库
+    	db.session.commit()
+    	return redirect(url_for('.moderate',page=request.args.get('page', 1, type=int))) # 跳转到跳入页
+
+
+    @main.route('/moderate/disable/<int:id>') # 禁止评论显示
+    @login_required
+    @permission_required(Permission.MODERATE)
+    def moderate_disable(id):
+    	comment = Comment.query.get_or_404(id)
+    	comment.disabled = True
+    	db.session.add(comment)
+    	db.session.commit()
+    	return redirect(url_for('.moderate',page=request.args.get('page', 1, type=int)))
+
+    -------------------------------------------------------------------------
+
+
+5.web测试
+    1）.启动web服务，以 "joseph68@example.com/cat"身份登录
+
+    2）.发现是普通用户，index页导航栏，无评论管理入口 "Moderate Comments"
+
+    3）.修改当前登录用户角色
+    (venv) huhao:flasky huhao$ ./manage.py shell
+    >>> mod=User.query.filter_by(username='joseph68').first()
+    >>> mod.role = Role.query.filter_by(name='Administrator').first()
+    >>> db.session.commit()
+
+    4）.退出，重新登入系统，index页正常显示 评论管理入口 "Moderate Comments"，点击进入
+
+    5）.发现所有评论全部出现 "Enable" 或 "Disable" 按钮，任意选择一条评论，点击"Disable"，
+
+    6）.返回Index页，找到当前文章，发现右下角总评论数未发生改变，，点击总评论数"xxComments"，进入该文章的Post页，
+
+    7）定位到被禁止的评论，发现评论内容已被替换为"This comment has been disabled by a moderator."
+
+    8）切回评论管理页，放开被禁止的评论，发现可以正常显示评论内容。
+
+
+

@@ -1,0 +1,148 @@
+本节功能： 添加评论。
+
+1.添加Comment模型
+    flasky/app/models.py
+    -------------------------------------------------------------------------
+    class Post(db.Model):
+        ...
+        comments = db.relationship('Comment', backref='post', lazy='dynamic') # 往Comment表，添加 post属性，直接映射当前文章
+
+    class User(UserMixin, db.Model):
+        ...
+        comments = db.relationship('Comment', backref='author', lazy='dynamic') # 对Comment 表添加author属性，此属性直接映射当前评论的作者
+
+    class Comment(db.Model):
+    	# 评论模型
+    	__tablename__ = 'comments'
+    	id = db.Column(db.Integer, primary_key=True)
+    	body = db.Column(db.Text)
+    	body_html = db.Column(db.Text)
+    	timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    	disabled = db.Column(db.Boolean) # 管理状态
+    	author_id = db.Column(db.Integer, db.ForeignKey('users.id')) # 谁的评论
+    	post_id = db.Column(db.Integer, db.ForeignKey('posts.id'))  # 针对哪篇文章
+
+    	@staticmethod
+    	def on_changed_body(target, value, oldvalue, initiator):
+    		# 入库监听事件
+    		allowed_tags = ['a', 'abbr', 'acronym', 'b', 'code', 'em', 'i','strong']
+    		target.body_html = bleach.linkify(bleach.clean(markdown(value, output_format='html'),tags=allowed_tags, strip=True))
+
+    db.event.listen(Comment.body, 'set', Comment.on_changed_body) # Comment表插入或是修改是，执行刹 Markdown html代码的替换操作
+
+    -------------------------------------------------------------------------
+
+
+2.评论表单
+    flasky/app/main/forms.py
+    -------------------------------------------------------------------------
+    class CommentForm(FlaskForm):
+    	body = StringField('Enter your comment', validators=[DataRequired()])
+    	submit = SubmitField('Submit')
+
+    -------------------------------------------------------------------------
+
+3.视图页
+    flasky/app/models.py
+    -------------------------------------------------------------------------
+    @main.route('/post/<int:id>', methods=['GET', 'POST'])
+    def post(id): # 查看指定文章 Post页
+    	post = Post.query.get_or_404(id) # 查看指定文章是否存在，不存在直接抛异常
+    	form = CommentForm()
+    	if form.validate_on_submit(): # POST 提交评论
+    		comment = Comment(body=form.body.data,
+    		                  post=post,
+    		                  author=current_user._get_current_object())
+    		db.session.add(comment) # 入库
+    		db.session.commit()
+    		flash('Your comment has been published.')
+    		return redirect(url_for('.post', id=post.id, page=-1)) # 重定向到当前页，并显示最后一页
+    	page = request.args.get('page', 1, type=int) # GET
+    	if page == -1: # POST 刚刚成功提交评论
+    		page = (post.comments.count() - 1) // \
+    		       current_app.config['FLASKY_COMMENTS_PER_PAGE'] + 1 # 解析 page=-1,指向最新评论所在页
+    	pagination = post.comments.order_by(Comment.timestamp.asc()).paginate(
+    			page, per_page=current_app.config['FLASKY_COMMENTS_PER_PAGE'],
+    			error_out=False)
+    	comments = pagination.items
+    	return render_template('post.html', posts=[post], form=form,comments=comments, pagination=pagination)
+
+    -------------------------------------------------------------------------
+
+
+4.Post页评论html模板
+    flasky/app/templates/post.html
+    -------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky - Post{% endblock %}
+
+    {% block page_content %}
+        {% include '_posts.html' %}
+        <h4 id="comments">Comments</h4>
+        {% if current_user.can(Permission.COMMENT) %}
+            <div class="comment-form">
+                {{ wtf.quick_form(form) }}
+            </div>
+        {% endif %}
+        {% include '_comments.html' %}  <!-- 内嵌评论页-->
+        {% if pagination %}
+            <div class="pagination">
+                {{ macros.pagination_widget(pagination, '.post', fragment='#comments', id=posts[0].id) }}
+            </div>
+        {% endif %}
+    {% endblock %}
+
+    -------------------------------------------------------------------------
+
+    flasky/app/templates/_comments.html
+    -------------------------------------------------------------------------
+    <ul class="comments">
+        {% for comment in comments %}
+        <li class="comment">
+            <div class="comment-thumbnail">
+                <a href="{{ url_for('.user', username=comment.author.username) }}">
+                    <img class="img-rounded profile-thumbnail" src="{{ comment.author.gravatar(size=40) }}">
+                </a>
+            </div>
+            <div class="comment-content">
+                <div class="comment-date">{{ moment(comment.timestamp).fromNow() }}</div>
+                <div class="comment-author"><a href="{{ url_for('.user', username=comment.author.username) }}">{{ comment.author.username }}</a></div>
+                <div class="comment-body">
+                    {% if comment.body_html %}
+                        {{ comment.body_html | safe }}
+                    {% else %}
+                        {{ comment.body }}
+                    {% endif %}
+                </div>
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+
+    -------------------------------------------------------------------------
+
+
+5.更新评论内嵌页的CSS效果
+    flasky/app/static/styles.css
+
+
+6.Config添加预加载评论配置
+    flasky/config.py
+    -------------------------------------------------------------------------
+    class Config:
+        ...
+        FLASKY_COMMENTS_PER_PAGE = os.environ.get('FLASKY_COMMENTS_PER_PAGE') or 5
+
+    -------------------------------------------------------------------------
+
+7.web测试
+    1）启动web服务，登录状态切入某篇文章的Post页；
+
+    2）编辑提交评论，查看 markdown 回显效果
+
+    3）连续添加，直到产生分页效果，此时会直接定位到末尾；
+
+    4）返回Index页，右下角，出现文章的评论数。

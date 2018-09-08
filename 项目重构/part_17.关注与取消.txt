@@ -1,0 +1,230 @@
+本节功能：关注与取消关注，显示关注数和被关注数。
+
+1.编辑Follower模型 创建多对多映射关系
+    flasky/app/models.py
+    ------------------------------------------------------------------------------------------------
+    class Follow(db.Model):
+    	__tablename__ = 'follows'
+    	follower_id = db.Column(db.Integer, db.ForeignKey('users.id'),primary_key=True) # 粉丝
+    	followed_id = db.Column(db.Integer, db.ForeignKey('users.id'),primary_key=True) # 自己关注的
+    	timestamp = db.Column(db.DateTime, default=datetime.utcnow) # 操作时间
+
+    class User(UserMixin, db.Model):
+        ....
+        posts = db.relationship('Post', backref='author', lazy='dynamic') # 被 posts 表以 author 字段进行引用
+
+        followed = db.relationship('Follow',foreign_keys=[Follow.follower_id],backref=db.backref('follower', lazy='joined'),
+                                   lazy='dynamic',cascade='all, delete-orphan') # 我关注的人 (Follow表中，我为followed时，对应我的follower集合)
+
+        followers = db.relationship('Follow',foreign_keys=[Follow.followed_id],backref=db.backref('followed', lazy='joined'),
+                                lazy='dynamic',cascade='all, delete-orphan') # 我的粉丝(Follow表中，我为followers时，对应的我的followed集合)
+
+        ....
+
+        def follow(self, user): # 关注他人
+    		if not self.is_following(user): # 之前未关注过，才能添加新关注
+    			f = Follow(follower=self, followed=user) # 自己作为粉丝关注别
+    			db.session.add(f)
+    			db.session.commit() # 必须提交
+
+    	def unfollow(self, user): # 取消关注
+    		f = self.followed.filter_by(followed_id=user.id).first()
+    		if f: # 之前关注过的才能取消关注
+    			db.session.delete(f)
+    			db.session.commit() # 必须提交
+
+    	def is_following(self, user): # 检测我是否关注了他
+    		if user.id is None: # 他必须存在
+    			return False
+    		return self.followed.filter_by(followed_id=user.id).first() is not None # 他被我关注
+
+    	def is_followed_by(self, user): # 检测我是否被他关注
+    		if user.id is None: # 他必须存在
+    			return False
+
+    ------------------------------------------------------------------------------------------------
+
+
+2.编辑profile页，添加关注与取消按钮
+     flasky/app/templates/user.html
+     ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky - {{ user.username }}{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <img class="img-rounded profile-thumbnail" src="{{ user.gravatar(size=256) }}">
+            <div class="profile-header">
+                <h1>{{ user.username }}</h1>
+                {% if user.name or user.location %}
+                    <p>
+                        {% if user.name %}{{ user.name }}<br>{% endif %}
+                        {% if user.location %}
+                            from <a href="http://maps.google.com/?q={{ user.location }}">{{ user.location }}</a><br>
+                        {% endif %}
+                    </p>
+                {% endif %}
+                {% if current_user.is_administrator() %}
+                    <p><a href="mailto:{{ user.email }}">{{ user.email }}</a></p>
+                {% endif %}
+                {% if user.about_me %}<p>{{ user.about_me }}</p>{% endif %}
+                <p>Member since {{ moment(user.member_since).format('L') }}. Last seen {{ moment(user.last_seen).fromNow() }}.</p>
+                <p>{{ user.posts.count() }} blog posts.</p>
+                <p>
+                    {% if current_user.can(Permission.FOLLOW) and user != current_user %}
+                        {% if not current_user.is_following(user) %}
+                            <a href="{{ url_for('.follow', username=user.username) }}" class="btn btn-primary">Follow</a>
+                        {% else %}
+                            <a href="{{ url_for('.unfollow', username=user.username) }}" class="btn btn-default">Unfollow</a>
+                        {% endif %}
+                    {% endif %}
+                    <a href="{{ url_for('.followers', username=user.username) }}">Followers: <span class="badge">{{ user.followers.count() }}</span></a>  <!-- 《《《 -->
+                    <a href="{{ url_for('.followed_by', username=user.username) }}">Following: <span class="badge">{{ user.followed.count() }}</span></a> <!-- 《《《 -->
+                    {% if current_user.is_authenticated and user != current_user and user.is_following(current_user) %}
+                        | <span class="label label-default">Follows you</span>
+                    {% endif %}
+                </p>
+                <p>
+                    {% if user == current_user %}
+                        <a class="btn btn-default" href="{{ url_for('.edit_profile') }}">Edit Profile</a>
+                    {% endif %}
+                    {% if current_user.is_administrator() %}
+                        <a class="btn btn-danger" href="{{ url_for('.edit_profile_admin', id=user.id) }}">Edit Profile [Admin]</a>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+        <h3>Posts by {{ user.username }}</h3>
+        {% include '_posts.html' %}
+        {% if pagination %}
+            <div class="pagination">
+                {{ macros.pagination_widget(pagination, '.user', username=user.username) }}
+            </div>
+        {% endif %}
+    {% endblock %}
+
+     ------------------------------------------------------------------------------------------------
+
+
+3.编辑粉丝与自己关注对象明细页
+    flasky/app/templates/followers.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky - {{ title }} {{ user.username }}{% endblock %}
+
+    {% block page_content %}
+    <div class="page-header">
+        <h1>{{ title }} {{ user.username }}</h1>
+    </div>
+    <table class="table table-hover followers">
+        <thead><tr><th>User</th><th>Since</th></tr></thead>
+        {% for follow in follows %}
+        <tr>
+            <td>
+                <a href="{{ url_for('.user', username = follow.user.username) }}">
+                    <img class="img-rounded" src="{{ follow.user.gravatar(size=32) }}">
+                    {{ follow.user.username }}
+                </a>
+            </td>
+            <td>{{ moment(follow.timestamp).format('L') }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <div class="pagination">
+        {{ macros.pagination_widget(pagination, endpoint, username = user.username) }}
+    </div>
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+
+4.视图跳转
+    flasky/app/main/views.py
+    ------------------------------------------------------------------------------------------------
+    @main.route('/follow/<username>')
+    @login_required  # 添加关注
+    @permission_required(Permission.FOLLOW) # 需要 FOLLOW 权限，即只有登录用户才能查看
+    def follow(username):
+    	user = User.query.filter_by(username=username).first()
+    	if user is None: # 被关注对象存在
+    		flash('Invalid user.')
+    		return redirect(url_for('.index'))
+    	if current_user.is_following(user): # 之前尚未关注过
+    		flash('You are already following this user.')
+    		return redirect(url_for('.user', username=username))
+    	current_user.follow(user) # 添加关注
+    	flash('You are now following %s.' % username)
+    	return redirect(url_for('.user', username=username)) # 重定向回 被关注着的 profile 页
+
+
+    @main.route('/unfollow/<username>')
+    @login_required # 取消关注
+    @permission_required(Permission.FOLLOW) # 需要 FOLLOW 权限，即只有登录用户才能查看
+    def unfollow(username):
+    	user = User.query.filter_by(username=username).first()
+    	if user is None: # 取消对象存在
+    		flash('Invalid user.')
+    		return redirect(url_for('.index'))
+    	if not current_user.is_following(user): # 已经关注了
+    		flash('You are not following this user.')
+    		return redirect(url_for('.user', username=username))
+    	current_user.unfollow(user) # 取消关注
+    	flash('You are not following %s anymore.' % username)
+    	return redirect(url_for('.user', username=username))  # 重定向回 取消对象的 profile 页
+
+
+    @main.route('/followers/<username>') # 获取指定用户的 全部粉丝
+    def followers(username):
+    	user = User.query.filter_by(username=username).first()
+    	if user is None: # 指定用户必须存在
+    		flash('Invalid user.')
+    		return redirect(url_for('.index'))
+    	page = request.args.get('page', 1, type=int)
+    	pagination = user.followers.paginate(
+    			page, per_page=current_app.config['FLASKY_FOLLOWERS_PER_PAGE'],
+    			error_out=False) # 分页抓取
+    	follows = [{'user': item.follower, 'timestamp': item.timestamp}
+    	           for item in pagination.items] # 组织数据到页面
+    	return render_template('followers.html', user=user, title="Followers of",
+    	                       endpoint='.followers', pagination=pagination,
+    	                       follows=follows) # pagination 给分页模型，follows 给当前页面，endpoint 为回退端点
+    	# 请求过一次后 follows 承载的是全部数据，展示粒度交给分页模型控制，一次抓取，分页展示
+
+
+    @main.route('/followed-by/<username>')
+    def followed_by(username): # 查看当前用户的全部关注
+    	user = User.query.filter_by(username=username).first()
+    	if user is None: # 指定用户必须存在
+    		flash('Invalid user.')
+    		return redirect(url_for('.index'))
+    	page = request.args.get('page', 1, type=int)
+    	pagination = user.followed.paginate(
+    			page, per_page=current_app.config['FLASKY_FOLLOWERS_PER_PAGE'],
+    			error_out=False)
+    	follows = [{'user': item.followed, 'timestamp': item.timestamp}
+    	           for item in pagination.items]
+    	return render_template('followers.html', user=user, title="Followed by",
+    	                       endpoint='.followed_by', pagination=pagination,
+    	                       follows=follows)
+
+    ------------------------------------------------------------------------------------------------
+
+
+5.Config页添加 FLASKY_FOLLOWERS_PER_PAGE 预加载配置
+    flasky/config.py
+    ------------------------------------------------------------------------------------------------
+    class Config:
+        ...
+        FLASKY_FOLLOWERS_PER_PAGE = os.environ.get('FLASKY_FOLLOWERS_PER_PAGE') or 5
+
+    ------------------------------------------------------------------------------------------------
+
+
+6.web测试
+    1).启动web程序，进入Index页，点击任意一个blog的用户名，进入Profile页，即可看到 Follow 或 Unfollow 按钮，以及关注和被关注统计；
+    2).点击Follow 或 Unfollow 按钮，即可看到相应统计数据的变化；
+    3).点击按钮旁边的 'followers' 或 'followings' 即可进入 follower页，查看明细。

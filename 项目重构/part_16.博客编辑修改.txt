@@ -1,0 +1,75 @@
+本节功能：blog 单独编辑修改页。
+
+1.编辑修改页html 模板
+    flasky/app/templates/edit_post.html
+    ----------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+
+    {% block title %}Flasky - Edit Post{% endblock %}
+
+    {% block page_content %}
+    <div class="page-header">
+        <h1>Edit Post</h1>
+    </div>
+    <div>
+        {{ wtf.quick_form(form) }}
+    </div>
+    {% endblock %}
+
+    {% block scripts %}
+    {{ super() }}
+    {{ pagedown.include_pagedown() }}
+    {% endblock %}
+
+    ----------------------------------------------------------------------
+
+
+2.index页和profile页中 blog 内嵌页插入修改页入口
+    flasky/app/templates/_posts.html
+    ----------------------------------------------------------------------
+    <div class="post-footer">
+        {% if current_user == post.author %} <!-- 自己编辑-->
+            <a href="{{ url_for('.edit', id=post.id) }}">
+                <span class="label label-primary">Edit</span>
+            </a>
+        {% elif current_user.is_administrator() %} <!-- 管理员编辑编辑-->
+            <a href="{{ url_for('.edit', id=post.id) }}">
+                <span class="label label-danger">Edit [Admin]</span>
+            </a>
+        {% endif %}
+        <a href="{{ url_for('.post', id=post.id) }}">
+            <span class="label label-default">Permalink</span>
+        </a>
+    </div>
+
+    ----------------------------------------------------------------------
+
+
+3.视图跳转
+    flasky/app/main/views.py
+    ----------------------------------------------------------------------
+    @main.route('/edit/<int:id>', methods=['GET', 'POST'])
+    @login_required
+    def edit(id):
+    	post = Post.query.get_or_404(id) # 未找到返回404
+    	if current_user != post.author and not current_user.can(Permission.ADMIN): # 操作的不是自己的blog 并且自身不是管理员
+    		abort(403) # 禁止访问
+    	form = PostForm()
+    	if form.validate_on_submit(): # POST
+    		post.body = form.body.data # 保存修改
+    		db.session.add(post)
+    		db.session.commit()
+    		flash('The post has been updated.')
+    		return redirect(url_for('.post', id=post.id)) # 重定向到 post单独展示页
+    	form.body.data = post.body
+    	return render_template('edit_post.html', form=form) # GET 编辑页
+
+    ----------------------------------------------------------------------
+
+
+4.web测试
+    启动web服务,进入Index页，每天blog的Permalink链接前出现 'Edit' 或 'Edit[Admin]' 链接，点击即可进入单独编辑页进行编辑，然后保存。
+
+
+

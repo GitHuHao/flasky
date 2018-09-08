@@ -1,0 +1,97 @@
+本节功能 ：密码修改（以新替旧）
+
+1. 编写密码修改表单 flasky/app/auth/forms.py
+    ------------------------------------------------------------------------------------------------
+    class ChangePasswordForm(FlaskForm):
+    	# 修改表单
+    	old_password = PasswordField('Old password', validators=[DataRequired()])
+    	password = PasswordField('New password', validators=[DataRequired(), EqualTo('password2', message='Passwords must match.')])
+    	password2 = PasswordField('Confirm new password',validators=[DataRequired()])
+    	submit = SubmitField('Update Password')
+
+    ------------------------------------------------------------------------------------------------
+
+
+2. 编写视图跳转模块 flasky/app/auth/views.py
+    ------------------------------------------------------------------------------------------------
+    @auth.route('/change-password', methods=['GET', 'POST'])
+    @login_required # 只有登录状态才能点击
+    def change_password():
+    	form = ChangePasswordForm()
+    	if form.validate_on_submit(): #POST
+    		if current_user.verify_password(form.old_password.data): # 校验
+    			current_user.password = form.password.data # 更新密码
+    			db.session.add(current_user) # 保存
+    			db.session.commit()
+    			flash('Your password has been updated.') # 提示消息
+    			return redirect(url_for('main.index')) # 重定向到index页
+    		else:
+    			flash('Invalid password.') # 校验不通过
+    	return render_template("auth/change_password.html", form=form) # GET
+
+    ------------------------------------------------------------------------------------------------
+
+
+3. 编写密码修改html模板
+    flasky/app/templates/auth/change_password.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+
+    {% block title %}Flasky - Change Password{% endblock %}
+
+    {% block page_content %}
+    <div class="page-header">
+        <h1>Change Your Password</h1>
+    </div>
+    <div class="col-md-4">
+        {{ wtf.quick_form(form) }}
+    </div>
+    {% endblock %}
+    ------------------------------------------------------------------------------------------------
+
+
+4. 编写 表单修改入口链接
+    ------------------------------------------------------------------------------------------------
+     <div class="navbar-collapse collapse">
+        <ul class="nav navbar-nav">
+            <li><a href="{{ url_for('main.index') }}">Home</a></li>
+        </ul>
+        <ul class="nav navbar-nav navbar-right">
+            {% if current_user.is_authenticated %}
+                <li class="dropdown">   <!-- 之前的列表，整合到下拉选中 -->
+                    <a href="#" class="dropdown-toggle" data-toggle="dropdown">Account <b class="caret"></b></a>
+                    <ul class="dropdown-menu">
+                        <li><a href="{{ url_for('auth.change_password') }}">Change Password</a></li>
+                        <li><a href="{{ url_for('auth.logout') }}">Log Out</a></li>
+                    </ul>
+                </li>
+            {% else %}
+                <li><a href="{{ url_for('auth.login') }}">Log In</a></li>
+            {% endif %}
+        </ul>
+    </div>
+
+    ------------------------------------------------------------------------------------------------
+
+
+5. 编写单元测试类(略)
+
+
+6. web测试
+    1) 进入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    2) 运行web服务
+    (venv) huhao:flasky huhao$ ./manage.py runserver --host 127.0.0.1
+    ...
+
+    3) 访问主页 http://127.0.0.1:5000
+
+    4) 点击右上角 "LogIn" 登入
+
+    5）跳转 index页，点击右上角"Account/Change Password"
+
+    6) 跳转密码修改页，测试密码校验约束，提交正确修改信息
+
+    7）登出，重新登入，验证修改是否成功。

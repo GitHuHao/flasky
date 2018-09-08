@@ -1,0 +1,431 @@
+1. 编辑flasky/app/models.py 对User类添加唯一约束email字段，和 hash加密认证代码
+    1） 编码
+    ------------------------------------------------------------------------------------------------
+    from werkzeug.security import generate_password_hash,check_password_hash
+
+    class User(UserMixin, db.Model):
+    	__tablename__ = 'users'
+    	id = db.Column(db.Integer, primary_key=True)
+    	email = db.Column(db.String(64), unique=True, index=True)
+    	username = db.Column(db.String(64), unique=True, index=True)
+    	password_hash = db.Column(db.String(128))
+    	role_id = db.Column(db.Integer, db.ForeignKey('roles.id'))
+
+    	@property
+    	def password(self):
+    		raise AttributeError('password is not a readable attribute')
+
+    	@password.setter
+    	def password(self, password):
+    		self.password_hash = generate_password_hash(password)
+
+    	def verify_password(self, password):
+    		return check_password_hash(self.password_hash, password)
+
+    	def __repr__(self):
+    		return '<User %r>' % self.username
+
+    ------------------------------------------------------------------------------------------------
+
+    2) 同步修改到db
+    # 创建迁移脚本 (注：上节针对ebaafbffb846_second.py迁移脚本，执行了upgrade后，有执行了异常downgrade,
+    导致本次一开始执行python manage.py db migrate -m 'third' 没任何反应，执行python manage.py db upgrade
+    将ebaafbffb846_second.py的改动引用后，重新进行执行python manage.py db migrate -m 'third'才生效 )
+    (venv) huhao:flasky huhao$ python manage.py db migrate -m 'fourth'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added table 'roles'
+    INFO  [alembic.autogenerate.compare] Detected added table 'users'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_users_username' on '['username']'
+    INFO  [alembic.autogenerate.compare] Detected removed index 'ix_users1_username' on 'users1'
+    INFO  [alembic.autogenerate.compare] Detected removed table u'users1'
+    INFO  [alembic.autogenerate.compare] Detected removed index 'ix_peoples_name' on 'peoples'
+    INFO  [alembic.autogenerate.compare] Detected removed table u'peoples'
+    INFO  [alembic.autogenerate.compare] Detected removed table u'roles1'
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/73af4a9d27ab_fourth.py ... done
+
+    # 执行迁移同步
+    (venv) huhao:flasky huhao$ python manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running upgrade ebaafbffb846 -> 73af4a9d27ab, fourth
+
+    3）User 密码校验测试
+    (venv) huhao:flasky huhao$ ./manage.py shell
+
+    >>> db
+    <SQLAlchemy engine=sqlite:////Users/huhao/software/idea_proj/flasky/data-dev.sqlite>
+    >>> str(User.query) # 新模型生效
+    'SELECT users.id AS users_id, users.username AS users_username, users.password_hash AS users_password_hash, users.role_id AS users_role_id \nFROM users'
+    >>> u=User()
+    >>> u.password='cat'
+    >> u.password # 不可读
+    Traceback (most recent call last):
+      File "<console>", line 1, in <module>
+      File "/Users/huhao/software/idea_proj/flasky/app/models.py", line 33, in password
+        raise AttributeError('password is not a readable attribute')
+    AttributeError: password is not a readable attribute
+    >>> u.password_hash # hash 加密
+    'pbkdf2:sha256:50000$HfO0sPtj$8709ce8efd5f1bc3e2c471ce1798511dc745028bf6f741bccded24edc97747d7'
+    >>> u.verify_password('cat') # 验证通过
+    True
+    >>> u.verify_password('dog')
+    False
+    >>> u2=User()
+    >>> u2.password='cat'
+    >>> u2.password_hash # 不同对象，即便密码一致，hash 加密后内容也会不同
+    'pbkdf2:sha256:50000$HvGlI1se$abd0b83a0de1b546d41a1a909503186611db257bec61ffc7bbed7a0d79c803e8'
+    >>>
+
+2.编写User认证模块测试类 flasky/tests/test_user_model.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/26'
+    Info:
+
+    """
+    import unittest
+    from app.models import User
+
+    class UserModelTestCase(unittest.TestCase):
+    	'''
+    	User 类测试
+    	'''
+    	def test_password_setter(self):
+    		u = User(password='cat')
+    		self.assertTrue(u.password_hash is not None)
+
+    	def test_no_password_getter(self):
+    		u = User(password='cat')
+    		with self.assertRaises(AttributeError):
+    			u.password
+
+    	def test_password_verification(self):
+    		u = User(password='cat')
+    		self.assertTrue(u.verify_password('cat'))
+    		self.assertTrue(u.verify_password('dog'))
+
+    	def test_password_salts_are_random(self):
+    		u = User(password='cat')
+    		u2= User(password='cat')
+    		self.assertTrue(u.password_hash != u2.password_hash)
+
+    ------------------------------------------------------------------------------------------------
+
+3. 执行测试
+    huhao:flasky huhao$ source venv/bin/activate
+    (venv) huhao:flasky huhao$ python manage.py test_basic
+
+    ----------------------------------------------------------------------
+    Ran 6 tests in 1.813s
+
+    FAILED (failures=1)
+    (venv) huhao:flasky huhao$ python manage.py test_basic
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+    test_no_password_getter (test_user_model.UserModelTestCase) ... ok
+    test_password_salts_are_random (test_user_model.UserModelTestCase) ... ok
+    test_password_setter (test_user_model.UserModelTestCase) ... ok
+    test_password_verification (test_user_model.UserModelTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 6 tests in 2.036s
+
+    OK
+
+4. 编辑登录认证模块 flasky/app/auth
+    auth
+        |. __init__.py
+        |. forms.py
+        |. views.py
+
+    1) 蓝本页 flasky/app/auth/__init__.py
+    ----------------------------------------------------------------------
+    from flask import Blueprint
+
+    auth = Blueprint('auth', __name__)
+    ----------------------------------------------------------------------
+
+    2).表单页 flasky/app/auth/forms.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/26'
+    Info:
+
+    """
+    from flask_wtf import FlaskForm
+    from wtforms import StringField,PasswordField,BooleanField,SubmitField
+    from wtforms.validators import DataRequired,Length,Email
+
+    class LoginForm(FlaskForm):
+    	email = StringField('Email', validators=[DataRequired(), Length(1, 64),Email()])
+    	password = PasswordField('Password', validators=[DataRequired()])
+    	remember_me = BooleanField('Keep me logged in')
+    	submit = SubmitField('Log In')
+
+    ----------------------------------------------------------------------
+
+    3).视图页 flasky/app/auth/views.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+            render_template() 函数会首先搜索程序配置的模板文件夹，然后再 搜索蓝本配置的模板文件夹
+    """
+    from flask import render_template,redirect,request,url_for,flash
+    from flask_login import login_user,logout_user,login_required
+    from . import auth
+    from ..models import User
+    from .forms import LoginForm
+
+
+    @auth.route('/login', methods=['GET', 'POST'])
+    def login():
+    	form = LoginForm()
+    	if form.validate_on_submit():
+    		user = User.query.filter_by(email=form.email.data).first()
+    		if user is not None and user.verify_password(form.password.data):
+    			login_user(user, form.remember_me.data)
+    			next = request.args.get('next')
+    			if next is None or not next.startswith('/'):
+    				next = url_for('main.index')
+    			return redirect(next)
+    		flash('Invalid username or password.')
+    	return render_template('auth/login.html', form=form)
+
+
+    @auth.route('/logout')
+    @login_required
+    def logout():
+    	logout_user()
+    	flash('You have been logged out.')
+    	return redirect(url_for('main.index'))
+
+    ----------------------------------------------------------------------
+
+    4).认证模块蓝本页注册视图
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    from flask import Blueprint
+
+    auth = Blueprint('auth', __name__)
+
+    from . import views  # <<<<<
+    ----------------------------------------------------------------------
+
+    5).编辑登录模板 flasky/app/templates/auth/login.html
+    ----------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+
+    {% block title %}Flasky - Login{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Login</h1>
+        </div>
+        <div class="col-md-4">
+            {{ wtf.quick_form(form) }}
+        </div>
+    {% endblock %}
+    ----------------------------------------------------------------------
+
+    6).base模板 和 index 模板添加 身份识别模块代码
+    flasky/app/templates/base.html
+    ----------------------------------------------------------------------
+    {% extends "bootstrap/base.html" %}
+
+    {% block title %}Flasky{% endblock %}
+
+    {% block head %}
+        {{ super() }}
+        <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+        <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    {% endblock %}
+
+    {% block navbar %}
+        <div class="navbar navbar-inverse" role="navigation">
+            <div class="container">
+                <div class="navbar-header">
+                    <button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
+                        <span class="sr-only">Toggle navigation</span>
+                        <span class="icon-bar"></span>
+                        <span class="icon-bar"></span>
+                        <span class="icon-bar"></span>
+                    </button>
+                    <a class="navbar-brand" href="{{ url_for('main.index') }}">Flasky</a>
+                </div>
+                <div class="navbar-collapse collapse">
+                    <ul class="nav navbar-nav">
+                        <li><a href="{{ url_for('main.index') }}">Home</a></li>
+                    </ul>
+                    <ul class="nav navbar-nav navbar-right">
+                        {% if current_user.is_authenticated %}
+                            <li><a href="{{ url_for('auth.logout') }}">Log Out</a></li>
+                        {% else %}
+                            <li><a href="{{ url_for('auth.login') }}">Log In</a></li>
+                        {% endif %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    {% endblock %}
+
+    {% block content %}
+        <div class="container">
+            {% for message in get_flashed_messages() %}
+                <div class="alert alert-warning">
+                    <button type="button" class="close" data-dismiss="alert">&times;</button>
+                    {{ message }}
+                </div>
+            {% endfor %}
+
+            {% block page_content %}{% endblock %}
+        </div>
+    {% endblock %}
+
+    {% block scripts %}
+        {{ super() }}
+        {{ moment.include_moment() }}
+    {% endblock %}
+    ----------------------------------------------------------------------
+
+    flasky/app/templates/index.html
+    ----------------------------------------------------------------------
+    {% extends "base.html" %}
+
+    {% block title %}Flasky{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Hello, {% if current_user.is_authenticated %}{{ current_user.username }}{% else %}Stranger{% endif %}!</h1>
+        </div>
+    {% endblock %}
+    ----------------------------------------------------------------------
+
+
+5.注册登录认证模块 flasky/app/__init__.py
+    ----------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    from flask import Flask
+    from flask_bootstrap import Bootstrap
+    from flask_mail import Mail
+    from flask_moment import Moment
+    from flask_sqlalchemy import SQLAlchemy
+    from config import config
+
+    from flask_login import LoginManager
+
+
+
+    # # 此处引入主控蓝本操作，必须放在顶级代码预加载，而不能写入create_app 函数内，否则会出现导包异常
+    # from .main import main as main_blueprint
+    # from .auth import auth as auth_blueprint
+
+
+    bootstrap = Bootstrap() # 前端展示组件
+    mail = Mail() # 邮件发送模块
+    moment = Moment() # 时间，语言 本地化模块
+    db = SQLAlchemy() # 数据库模块
+
+    login_manager = LoginManager()
+    login_manager.session_protection = 'strong'
+    login_manager.login_view = 'auth.login'
+
+
+    def create_app(config_name):
+    	app = Flask(__name__)
+    	app.config.from_object(config[config_name])
+    	config[config_name].init_app(app)
+
+    	bootstrap.init_app(app)
+    	mail.init_app(app)
+    	moment.init_app(app)
+    	db.init_app(app)
+    	login_manager.init_app(app)
+
+    	from app.models import User  # 避免循环引入，只能放在函数内
+    	@login_manager.user_loader  # 只能跟在 login_manager.init_app(app) 之后执行才会生效
+    	def load_user(user_id):
+    		return User.query.get(int(user_id))
+
+    	from .main import main as main_blueprint
+    	app.register_blueprint(main_blueprint)
+
+    	from .auth import auth as auth_blueprint
+    	app.register_blueprint(auth_blueprint, url_prefix='/auth') # 注册权限认证蓝本
+
+    	return app
+
+6.web测试
+    1).添加新注册用户
+    (venv) huhao:flasky huhao$ ./manage.py shell
+    >>> u = User(email='john@example.com', username='john', password='cat')
+    >>> db.session.add(u)
+    >>> db.session.commit()
+    >>> exit()
+
+    2).启动web服务
+    (venv) huhao:flasky huhao$ ./manage.py runserver --host 127.0.0.1
+    或 按如下方式启动
+    (venv) huhao:flasky huhao$ export FLASK_APP=manage.py
+    (venv) huhao:flasky huhao$ flask run
+     * Serving Flask app "manage.py"
+     * Environment: production
+       WARNING: Do not use the development server in a production environment.
+       Use a production WSGI server instead.
+     * Debug mode: off
+     * Running on http://127.0.0.1:5000/ (Press CTRL+C to quit)
+
+    3).访问 http://127.0.0.1:5000 直接跳转 main/index.html
+
+    4).点击 右上角 "Login",跳转 auth/login.html 登录页
+       输入 john@example.com/cat 勾选Remember Me，成功跳转 main/index.html 页，并显示登录用户信息
+
+    5).点击右上角 "Logout",重定向到 main/index.html 页，登录信息已被清楚，并且 "Logout" 按钮被隐藏
+
+    6).同时兼顾后台打印日志
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

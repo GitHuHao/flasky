@@ -1,0 +1,173 @@
+本节功能：密码重置 （忘记密码时，通过token邮件机制重设密码）
+
+1. 编辑User 模型，添加密码重置函数
+    flasky/app/models.py
+    ------------------------------------------------------------------------------------------------
+    class User(UserMixin, db.Model):
+        ....
+        def generate_reset_token(self, expiration=3600): # 确认指定邮件有效时，发送带token 的重置邮件
+        		s = Serializer(current_app.config['SECRET_KEY'], expiration)
+        		return s.dumps({'reset': self.id}).decode('utf-8')
+
+        @staticmethod
+        def reset_password(token, new_password): # 提交重置表单，校验成功，以静态函数形式，进行update 操作
+            s = Serializer(current_app.config['SECRET_KEY'])
+            try:
+                data = s.loads(token.encode('utf-8'))
+            except:
+                return False
+            user = User.query.get(data.get('reset'))
+            if user is None:
+                return False
+            user.password = new_password
+            db.session.add(user)
+            db.session.commit()
+            return True
+
+    ------------------------------------------------------------------------------------------------
+
+
+2. 编辑 密码重置申请表单，密码重置表单
+    flasky/app/forms.py
+    ------------------------------------------------------------------------------------------------
+    class PasswordResetRequestForm(FlaskForm):
+    	# 密码重置请求表单
+    	email = StringField('Email', validators=[DataRequired(), Length(1, 64),Email()])
+    	submit = SubmitField('Reset Password')
+
+
+    class PasswordResetForm(FlaskForm):
+    	# 密码重置表单
+    	password = PasswordField('New Password', validators=[DataRequired(), EqualTo('password2', message='Passwords must match')])
+    	password2 = PasswordField('Confirm password', validators=[DataRequired()])
+    	submit = SubmitField('Reset Password')
+
+
+    ------------------------------------------------------------------------------------------------
+
+
+3. 编辑 跳转视图
+    flasky/app/views.py
+    ------------------------------------------------------------------------------------------------
+    from .forms import LoginForm,RegistrationForm,ChangePasswordForm,PasswordResetRequestForm,PasswordResetForm
+    ...
+    @auth.route('/reset', methods=['GET', 'POST']) # 密码重置申请页提交
+    def password_reset_request():
+    	if not current_user.is_anonymous: # 非匿名用户(误触发)，直接弹回主页，重置针对的是忘记密码的场景
+    		return redirect(url_for('main.index'))
+    	form = PasswordResetRequestForm()
+    	if form.validate_on_submit(): # POST
+    		user = User.query.filter_by(email=form.email.data).first()
+    		if user: # email对应的用户存在
+    			token = user.generate_reset_token() # 创建 token,并发送重置邮件
+    			send_email(user.email, 'Reset Your Password','auth/email/reset_password',user=user, token=token)
+    		flash('An email with instructions to reset your password has been sent to you.') # 提示消息
+    		return redirect(url_for('auth.login')) # 重定向到主页
+    	return render_template('auth/reset_password.html', form=form) #GET
+
+
+    @auth.route('/reset/<token>', methods=['GET', 'POST']) # 处理重置业务
+    def password_reset(token):
+    	if not current_user.is_anonymous: # 非匿名用户（误触发），直接弹回主页
+    		return redirect(url_for('main.index'))
+    	form = PasswordResetForm()
+    	if form.validate_on_submit(): # POST
+    		if User.reset_password(token, form.password.data): # 验证成功
+    			# db.session.commit() # 此处觉得还是适合将修改操作放在User 中
+    			flash('Your password has been updated.') # 提示消息
+    			return redirect(url_for('auth.login')) # 重定向到登录页
+    		else:
+    			return redirect(url_for('main.index')) # 验证不通过，弹回主页
+    	return render_template('auth/reset_password.html', form=form) #GET
+
+    ------------------------------------------------------------------------------------------------
+
+
+4.编写测试类（略）
+
+
+5.编写重置邮件模板 flasky/app/templates/auth/email
+    reset_password.html
+    ------------------------------------------------------------------------------------------------
+    <p>Dear {{ user.username }},</p>
+    <p>To reset your password <a href="{{ url_for('auth.password_reset', token=token, _external=True) }}">click here</a>.</p>
+    <p>Alternatively, you can paste the following link in your browser's address bar:</p>
+    <p>{{ url_for('auth.password_reset', token=token, _external=True) }}</p>
+    <p>If you have not requested a password reset simply ignore this message.</p>
+    <p>Sincerely,</p>
+    <p>The Flasky Team</p>
+    <p><small>Note: replies to this email address are not monitored.</small></p>
+
+    ------------------------------------------------------------------------------------------------
+
+    reset_password.txt
+    ------------------------------------------------------------------------------------------------
+    Dear {{ user.username }},
+
+    To reset your password click on the following link:
+
+    {{ url_for('auth.password_reset', token=token, _external=True) }}
+
+    If you have not requested a password reset simply ignore this message.
+
+    Sincerely,
+
+    The Flasky Team
+
+    Note: replies to this email address are not monitored.
+
+    ------------------------------------------------------------------------------------------------
+
+
+6.编写重置密码 html 模板
+    flasky/app/templates/auth/reset_password.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+
+    {% block title %}Flasky - Password Reset{% endblock %}
+
+    {% block page_content %}
+    <div class="page-header">
+        <h1>Reset Your Password</h1>
+    </div>
+    <div class="col-md-4">
+        {{ wtf.quick_form(form) }}
+    </div>
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+
+7.编写 重置入口 (未登录状态才能使用，所以应该摆在登录页)
+    flasky/app/templates/auth/login.html
+    ------------------------------------------------------------------------------------------------
+    <div class="col-md-4">
+        {{ wtf.quick_form(form) }}
+        <br>
+        <p>Forgot your password? <a href="{{ url_for('auth.password_reset_request') }}">Click here to reset it</a>.</p>
+        <p>New user? <a href="{{ url_for('auth.register') }}">Click here to register</a>.</p>
+    </div>
+
+    ------------------------------------------------------------------------------------------------
+
+
+8.web 测试
+    1) 进入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    2) 运行web服务
+    (venv) huhao:flasky huhao$ ./manage.py runserver --host 127.0.0.1
+    ...
+
+    3) 访问主页 http://127.0.0.1:5000
+
+    4) 点击右上角 "LogIn"，进入login.html
+
+    5）点击"Forgot your password? Click here to reset it."，进入密码重置申请页，填写注册邮箱
+
+    6) 点击重置邮件，输入新密码，提交更新
+
+    7）登出，重新登入，验证修改是否成功。
+
+    8）使用更新密码，成功登入，地址栏手动访问 reset页 http://127.0.0.1:5000/auth/reset ，被成功弹回到index 页

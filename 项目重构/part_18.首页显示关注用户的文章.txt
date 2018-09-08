@@ -1,0 +1,211 @@
+本节功能: 首页显示关注用户的文章。
+
+1.修改User 模型
+    flasky/app/models.py
+    ------------------------------------------------------------------------------------------------
+    class User(UserMixin, db.Model):
+        ...
+        @staticmethod # 开发到中间阶段，之前插入的用户，都未能关注自身，在此进行调整
+        def add_self_follows():
+            for user in User.query.all():
+                if not user.is_following(user):
+                    user.follow(user)
+                    db.session.add(user)
+                    db.session.commit()
+
+        def __init__(self, **kwargs):
+            super(User, self).__init__(**kwargs)
+            if self.role is None:
+                if self.email == current_app.config['FLASKY_ADMIN']:
+                    self.role = Role.query.filter_by(name='Administrator').first()
+                if self.role is None:
+                    self.role = Role.query.filter_by(default=True).first()
+            if self.email is not None and self.avatar_hash is None:
+                self.avatar_hash = self.gravatar_hash()
+            self.follow(self) # 用户注册时，便添加对自身的关注方便查看自身的文章
+        ...
+        @property
+        def followed_posts(self):
+            return Post.query.join(Follow, Follow.followed_id == Post.author_id).filter(Follow.follower_id == self.id)
+
+    ------------------------------------------------------------------------------------------------
+
+2.视图跳转
+    flasky/app/main/views.py
+    ------------------------------------------------------------------------------------------------
+    @main.route('/', methods=['GET', 'POST'])
+    def index():
+    	form = PostForm()
+    	if current_user.can(Permission.WRITE) and form.validate_on_submit(): # POST 具备写库权限，且通过表单验证
+    		post = Post(body=form.body.data,author=current_user._get_current_object())
+    		db.session.add(post) # 保存文章
+    		db.session.commit()
+    		return redirect(url_for('.index')) # 重定向返回index页
+    	page = request.args.get('page', 1, type=int) # 分页
+    	show_followed = False # 默认显示全部
+    	if current_user.is_authenticated: # 已登录用户
+    		show_followed = bool(request.cookies.get('show_followed', ''))
+    	if show_followed: # 显示订阅
+    		query = current_user.followed_posts
+    	else:
+    		query = Post.query # 显示全部
+    	pagination = query.order_by(Post.timestamp.desc()).paginate(
+    			page, per_page=current_app.config['FLASKY_POSTS_PER_PAGE'],
+    			error_out=False)
+    	posts = pagination.items
+    	return render_template('index.html', form=form, posts=posts,
+    	                       show_followed=show_followed, pagination=pagination)
+
+    @main.route('/all')
+    @login_required
+    def show_all(): # index 菜单栏，展示全部用户的文章
+    	resp = make_response(redirect(url_for('.index'))) # 转发请求到indx页，并通过cookie 机制，通知加载全部文章
+    	resp.set_cookie('show_followed', '', max_age=30*24*60*60) # cookie 保存30日
+    	return resp
+
+
+    @main.route('/followed')
+    @login_required
+    def show_followed(): # index 菜单栏，展示订阅用户的文章
+    	resp = make_response(redirect(url_for('.index'))) # 转发请求到indx页，并通过cookie 机制，通知加载全部文章
+    	resp.set_cookie('show_followed', '1', max_age=30*24*60*60) # cookie 保存30日
+    	return resp
+
+    ------------------------------------------------------------------------------------------------
+
+3.编辑index页html模板
+    flasky/app/templates/index.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Hello, {% if current_user.is_authenticated %}{{ current_user.username }}{% else %}Stranger{% endif %}!</h1>
+        </div>
+        <div>
+            {% if current_user.can(Permission.WRITE) %}
+                {{ wtf.quick_form(form) }}
+            {% endif %}
+        </div>
+        <div class="post-tabs">
+            <ul class="nav nav-tabs">
+                <li{% if not show_followed %} class="active"{% endif %}><a href="{{ url_for('.show_all') }}">All</a></li>  <!-- 《《《 -->
+                {% if current_user.is_authenticated %}
+                    <li{% if show_followed %} class="active"{% endif %}><a href="{{ url_for('.show_followed') }}">Followers</a></li> <!-- 《《《 -->
+                {% endif %}
+            </ul>
+            {% include '_posts.html' %}  <!-- 此处既能看到好友文章，又能看到自己文章-->
+        </div>
+        {% if pagination %}
+            <div class="pagination">
+                {{ macros.pagination_widget(pagination, '.index') }}
+            </div>
+        {% endif %}
+    {% endblock %}
+
+    {% block scripts %}
+        {{ super() }}
+        {{ pagedown.include_pagedown() }}
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+4.修改profile页，关注用户需要排除自身
+    flasky/app/templates/user.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky - {{ user.username }}{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <img class="img-rounded profile-thumbnail" src="{{ user.gravatar(size=256) }}">
+            <div class="profile-header">
+                <h1>{{ user.username }}</h1>
+                {% if user.name or user.location %}
+                    <p>
+                        {% if user.name %}{{ user.name }}<br>{% endif %}
+                        {% if user.location %}
+                            from <a href="http://maps.google.com/?q={{ user.location }}">{{ user.location }}</a><br>
+                        {% endif %}
+                    </p>
+                {% endif %}
+                {% if current_user.is_administrator() %}
+                    <p><a href="mailto:{{ user.email }}">{{ user.email }}</a></p>
+                {% endif %}
+                {% if user.about_me %}<p>{{ user.about_me }}</p>{% endif %}
+                <p>Member since {{ moment(user.member_since).format('L') }}. Last seen {{ moment(user.last_seen).fromNow() }}.</p>
+                <p>{{ user.posts.count() }} blog posts.</p>
+                <p>
+                    {% if current_user.can(Permission.FOLLOW) and user != current_user %}
+                        {% if not current_user.is_following(user) %}
+                            <a href="{{ url_for('.follow', username=user.username) }}" class="btn btn-primary">Follow</a>
+                        {% else %}
+                            <a href="{{ url_for('.unfollow', username=user.username) }}" class="btn btn-default">Unfollow</a>
+                        {% endif %}
+                    {% endif %}
+                    {% if user.followers.count() -1 == 0 %}  <!-- 真正关注得人为0 -->
+                        <a href="#">Followers: <span class="badge">{{ user.followers.count() - 1 }}</span></a>
+                    {% else %}
+                        <a href="{{ url_for('.followers', username=user.username) }}">Followers: <span class="badge">{{ user.followers.count() - 1 }}</span></a>
+                    {% endif %}
+
+                    {% if user.followed.count() -1 == 0 %} <!-- 真正订阅的人为0 -->
+                        <a href="#">Following: <span class="badge">{{ user.followed.count() - 1 }}</span></a> <!-- 禁止跳转-->
+                    {% else %}
+                        <a href="{{ url_for('.followed_by', username=user.username) }}">Following: <span class="badge">{{ user.followed.count() - 1 }}</span></a>
+                    {% endif %}
+
+                    {% if current_user.is_authenticated and user != current_user and user.is_following(current_user) %}
+                        | <span class="label label-default">Follows you</span>
+                    {% endif %}
+                </p>
+                <p>
+                    {% if user == current_user %}
+                        <a class="btn btn-default" href="{{ url_for('.edit_profile') }}">Edit Profile</a>
+                    {% endif %}
+                    {% if current_user.is_administrator() %}
+                        <a class="btn btn-danger" href="{{ url_for('.edit_profile_admin', id=user.id) }}">Edit Profile [Admin]</a>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+        <h3>Posts by {{ user.username }}</h3>
+        {% include '_posts.html' %}
+        {% if pagination %}
+            <div class="pagination">
+                {{ macros.pagination_widget(pagination, '.user', username=user.username) }}
+            </div>
+        {% endif %}
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+5.web测试
+    1).之前入库数据，关注自身
+    (venv) huhao:flasky huhao$ ./manage.py shell
+    >>> User.add_self_follows()
+    >>> exit()
+
+    2) 启动web服务
+       启动方式1：
+       (venv) huhao:flasky huhao$ ./manage.py runserver --host 127.0.0.1
+       启动方式2：
+       (venv) huhao:flasky huhao$ export FLASK_APP=manage.py
+       (venv) huhao:flasky huhao$ flask run
+
+    3）进入index页，未登录状态，菜单栏，只会出现 "All" 选项，即展示全部文章
+
+    4）正常登录，index页，菜单栏出现"All" 和 "Followers" 选项，点击'Followers' 查看自己订阅的文章
+
+    5) 进入profile页，查看 'Followers' 和 'Following' 个数，当个数为0，不能点击附带超链接，否则，可以查看明细，但明细中不包含自身。
+
+
+
+
+

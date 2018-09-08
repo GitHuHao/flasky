@@ -1,0 +1,82 @@
+本节功能：配置多账号 git环境。
+
+需求声明：公司开发的gitlab环境 和 自己提交代码的github 环境，要求同时在一台机器上课随意访问到。
+
+1.配置公司的gitlab
+    1).生成针对 gitlab 的 ssh 密钥
+        huhao:~ huhao$ ssh-keygen -t rsa -C 'yourwork@email.com'
+        Generating public/private rsa key pair.
+        Enter file in which to save the key (/Users/huhao/.ssh/id_rsa): <<< 直接回车，接受默认位置
+        ...
+
+        huhao:~ huhao$ ls ~/.ssh
+        authorized_keys                     id_rsa << 私钥                 id_rsa.pub << 公钥            known_hosts
+
+    2).本地注册git(执行完毕，在~/.ssh目录下新生成了 config 配置文件)
+        git config user.name='cmcm'
+        git config user.email='yourwork@email.com'
+
+    3).校正配置
+        vim ~/.ssh/config
+        -------------------------------
+          Host git.liebaopay.com
+            HostName git.liebaopay.com
+            User cmcm
+            IdentityFile ~/.ssh/id_rsa
+        -------------------------------
+
+    4).gitlab 端注册ssh公钥 (粘贴到公司gitlab ssh注册位置)
+        cat ~/.ssh/id_rsa.pub | pbcopy
+
+    5).联通测试
+        ssh -T git@git.liebaopay.com
+        Welcome to GitLab, yourwork@email.com!
+
+2.配置个人的github
+    1).生成针对个人github的ssh密钥
+       huhao:~ huhao$ ssh-keygen -t rsa -C 'yourgithub@email.com'
+       Generating public/private rsa key pair.
+       Enter file in which to save the key (/Users/huhao/.ssh/id_rsa): /Users/huhao/.ssh/id_rsa_github <<< 保存在另外的文件中
+       ...
+
+       huhao:~ huhao$ ls ~/.ssh
+       authorized_keys         config                  id_rsa                  id_rsa.pub              id_rsa_github <<<私钥        id_rsa_github.pub << 公钥      known_hosts
+
+     2).本地注册git(执行完毕，在~/.ssh目录下新生成了 config 配置文件)
+            git config user.name='github'
+            git config user.email='yourgithubvi@email.com'
+
+    3).校正配置
+        vim ~/.ssh/config
+        -------------------------------
+        Host git.liebaopay.com
+          HostName git.liebaopay.com
+          User cmcm
+          IdentityFile ~/.ssh/id_rsa
+
+        Host github.com
+          HostName github.com
+          User github
+          IdentityFile ~/.ssh/id_rsa_github
+        -------------------------------
+
+    4).gitlab 端注册ssh公钥 (粘贴到自己的github ssh注册位置)
+        cat ~/.ssh/id_rsa_github.pub | pbcopy
+
+    5).联通测试
+        ssh -T git@github.com
+        Hi GitHuHao! You've successfully authenticated, but GitHub does not provide shell access.
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,74 @@
+本节功能：添加对正在运行web服务的性能监控。
+
+1.启动脚本添加性能监控逻辑
+    flasky/manage.py
+    -------------------------------------------------------------------------
+    @manager.command
+    def profile(length=25, profile_dir=None):
+    	# 最多保留最近的 25次查询，如果设置了profile_dir 则可以将分析结果保存下来
+    	"""Start the application under the code profiler."""
+    	from werkzeug.contrib.profiler import ProfilerMiddleware
+    	app.wsgi_app = ProfilerMiddleware(app.wsgi_app, restrictions=[length],profile_dir=profile_dir)
+    	app.run(debug=False)
+
+    -------------------------------------------------------------------------
+
+2.配置文件添加
+    flasky/config.py
+    -------------------------------------------------------------------------
+    class Config:
+        ...
+        SQLALCHEMY_RECORD_QUERIES = True    # 开启查询记录功能
+        FLASKY_SLOW_DB_QUERY_TIME = 0.5     # 查询超过 0.5秒判定为慢查询
+
+    -------------------------------------------------------------------------
+
+3.测试
+    # 启动服务，并开启性能监控
+    (venv) huhao:flasky huhao$ ./manage.py profile
+     * Serving Flask app "app" (lazy loading)
+     * Environment: production
+       WARNING: Do not use the development server in a production environment.
+       Use a production WSGI server instead.
+     * Debug mode: off
+     * Running on http://127.0.0.1:5000/ (Press CTRL+C to quit)
+    --------------------------------------------------------------------------------
+    PATH: '/user/joseph68'   <<< 页面访问了/user/joseph68 资源，下面是整个请求过程的跟踪
+             211012 function calls (198924 primitive calls) in 0.235 seconds
+
+       Ordered by: internal time, call count
+       List reduced from 1711 to 25 due to restriction <25>
+
+       ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+         9010    0.009    0.000    0.019    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/nodes.py:164(iter_child_nodes)
+    31466/31465    0.008    0.000    0.009    0.000 {isinstance}
+         1711    0.006    0.000    0.015    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/lexer.py:599(tokeniter)
+            5    0.006    0.001    0.006    0.001 {compile}
+        17286    0.006    0.000    0.008    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/nodes.py:148(iter_fields)
+    18159/18127    0.006    0.000    0.009    0.000 {getattr}
+         5624    0.006    0.000    0.006    0.000 {method 'match' of '_sre.SRE_Pattern' objects}
+           18    0.004    0.000    0.004    0.000 {method 'execute' of 'sqlite3.Cursor' objects}
+       3517/5    0.004    0.000    0.049    0.010 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/visitor.py:34(visit)
+          694    0.003    0.000    0.004    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/nodes.py:127(__init__)
+      2041/83    0.003    0.000    0.010    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/nodes.py:184(find_all)
+         1232    0.002    0.000    0.021    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/lexer.py:558(wrap)
+            1    0.002    0.002    0.006    0.006 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/sqlalchemy/dialects/sqlite/__init__.py:8(<module>)
+     1910/300    0.002    0.000    0.015    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/visitor.py:41(generic_visit)
+          156    0.002    0.000    0.009    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/sqlalchemy/sql/schema.py:921(__init__)
+    1845/1783    0.002    0.000    0.004    0.000 {hasattr}
+           14    0.002    0.000    0.002    0.000 {method 'fetchall' of 'sqlite3.Cursor' objects}
+         3517    0.002    0.000    0.004    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/visitor.py:26(get_visitor)
+         1669    0.002    0.000    0.002    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/lexer.py:247(test)
+      593/165    0.002    0.000    0.006    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/visitor.py:58(generic_visit)
+          110    0.002    0.000    0.004    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/sqlalchemy/sql/visitors.py:210(iterate)
+            1    0.002    0.002    0.003    0.003 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/sqlalchemy/dialects/sqlite/pysqlite.py:331(dbapi)
+            3    0.002    0.001    0.007    0.002 {__import__}
+    1313/1110    0.002    0.000    0.026    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/sqlalchemy/util/langhelpers.py:764(__get__)
+         1299    0.002    0.000    0.003    0.000 /Users/huhao/software/idea_proj/flasky/venv/lib/python2.7/site-packages/jinja2/compiler.py:382(write)
+
+
+    --------------------------------------------------------------------------------
+
+    127.0.0.1 - - [03/Sep/2018 16:23:21] "GET /user/joseph68 HTTP/1.1" 200 -
+
+

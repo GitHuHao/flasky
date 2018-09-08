@@ -1,0 +1,155 @@
+本节功能：index页 和 user页 添加分页组件。
+
+1.编写分页组件
+    flasky/app/templates/_macros.html # 分页宏代码
+    ------------------------------------------------------------------------------------------------
+    {% macro pagination_widget(pagination, endpoint) %}
+    <ul class="pagination">
+        <li{% if not pagination.has_prev %} class="disabled"{% endif %}>
+            <a href="{% if pagination.has_prev %}{{ url_for(endpoint, page=pagination.prev_num, **kwargs) }}{% else %}#{% endif %}">
+                &laquo;
+            </a>
+        </li>
+        {% for p in pagination.iter_pages() %}
+            {% if p %}
+                {% if p == pagination.page %}
+                <li class="active">
+                    <a href="{{ url_for(endpoint, page = p, **kwargs) }}">{{ p }}</a>
+                </li>
+                {% else %}
+                <li>
+                    <a href="{{ url_for(endpoint, page = p, **kwargs) }}">{{ p }}</a>
+                </li>
+                {% endif %}
+            {% else %}
+            <li class="disabled"><a href="#">&hellip;</a></li>
+            {% endif %}
+        {% endfor %}
+        <li{% if not pagination.has_next %} class="disabled"{% endif %}>
+            <a href="{% if pagination.has_next %}{{ url_for(endpoint, page=pagination.next_num, **kwargs) }}{% else %}#{% endif %}">
+                &raquo;
+            </a>
+        </li>
+    </ul>
+    {% endmacro %}
+
+    ------------------------------------------------------------------------------------------------
+
+2.index页 和 user页嵌入分页组件
+    flasky/app/templates/index.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Hello, {% if current_user.is_authenticated %}{{ current_user.username }}{% else %}Stranger{% endif %}!</h1>
+        </div>
+        <div>
+            {% if current_user.can(Permission.WRITE) %}
+                {{ wtf.quick_form(form) }}
+            {% endif %}
+        </div>
+        {% include '_posts.html' %}
+        {% if pagination %}
+        <div class="pagination">
+            {{ macros.pagination_widget(pagination, '.index') }}
+        </div>
+        {% endif %}
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+    flasky/app/templates/user.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "_macros.html" as macros %}
+
+    {% block title %}Flasky - {{ user.username }}{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <img class="img-rounded profile-thumbnail" src="{{ user.gravatar(size=256) }}">
+            <div class="profile-header">
+                <h1>{{ user.username }}</h1>
+                {% if user.name or user.location %}
+                    <p>
+                        {% if user.name %}{{ user.name }}<br>{% endif %}
+                        {% if user.location %}
+                            from <a href="http://maps.google.com/?q={{ user.location }}">{{ user.location }}</a><br>
+                        {% endif %}
+                    </p>
+                {% endif %}
+                {% if current_user.is_administrator() %}
+                    <p><a href="mailto:{{ user.email }}">{{ user.email }}</a></p>
+                {% endif %}
+                {% if user.about_me %}<p>{{ user.about_me }}</p>{% endif %}
+                <p>Member since {{ moment(user.member_since).format('L') }}. Last seen {{ moment(user.last_seen).fromNow() }}.</p>
+                <p>{{ user.posts.count() }} blog posts.</p>
+                <p>
+                    {% if user == current_user %}
+                        <a class="btn btn-default" href="{{ url_for('.edit_profile') }}">Edit Profile</a>
+                    {% endif %}
+                    {% if current_user.is_administrator() %}
+                        <a class="btn btn-danger" href="{{ url_for('.edit_profile_admin', id=user.id) }}">Edit Profile [Admin]</a>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+        <h3>Posts by {{ user.username }}</h3>
+        {% include '_posts.html' %}
+        {% if pagination %}
+            <div class="pagination">
+                {{ macros.pagination_widget(pagination, '.user', username=user.username) }}
+            </div>
+        {% endif %}
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+
+3.视图跳转页，添加分页逻辑
+    flasky/app/views.py
+    ------------------------------------------------------------------------------------------------
+    @main.route('/', methods=['GET', 'POST'])
+    def index():
+    	form = PostForm()
+    	if current_user.can(Permission.WRITE) and form.validate_on_submit(): # 是否有编辑权限，以及是否通过表单校验 POST
+    		post = Post(body=form.body.data,author=current_user._get_current_object()) # 封装 Post 对象
+    		db.session.add(post) # 提交保存
+    		db.session.commit()
+    		return redirect(url_for('.index')) # 重定向返回index页
+    	page = request.args.get('page', 1, type=int)
+    	pagination = Post.query.order_by(Post.timestamp.desc()).paginate(page, per_page=current_app.config['FLASKY_POSTS_PER_PAGE'],error_out=False)
+    	posts = pagination.items
+    	return render_template('index.html', form=form, posts=posts,pagination=pagination)
+
+
+    @main.route('/user/<username>')
+    def user(username):
+    	user = User.query.filter_by(username=username).first_or_404()
+    	page = request.args.get('page', 1, type=int)
+    	pagination = user.posts.order_by(Post.timestamp.desc()).paginate(
+    			page, per_page=current_app.config['FLASKY_POSTS_PER_PAGE'],
+    			error_out=False)
+    	posts = pagination.items
+    	return render_template('user.html', user=user, posts=posts,pagination=pagination)
+
+    ------------------------------------------------------------------------------------------------
+
+
+4. 配置项添加 默认预加载分页数配置
+    flasky/config.py
+    ------------------------------------------------------------------------------------------------
+    class Config:
+        ....
+        FLASKY_POSTS_PER_PAGE = os.environ.get('FLASKY_POSTS_PER_PAGE') or 20
+        ....
+    ------------------------------------------------------------------------------------------------
+
+
+5.web测试
+    启动web,无需登录情况，即可在index页使用分页功能。正常登录，进入profile页，检测分页功能。

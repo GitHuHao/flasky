@@ -1,0 +1,123 @@
+本节功能：用户资料编辑模块
+
+1.编辑 用户模型
+    flasky/app/models.py
+    ----------------------------------------------------------------------
+    from datetime import datetime
+    ...
+
+    class User(UserMixin, db.Model):
+        ...
+        name = db.Column(db.String(64)) # 昵称
+        location = db.Column(db.String(64)) # 位置
+        about_me = db.Column(db.Text()) # 自我介绍
+        member_since = db.Column(db.DateTime(), default=datetime.utcnow) # 注册时间
+        last_seen = db.Column(db.DateTime(), default=datetime.utcnow) # 上次访问时间
+
+        def ping(self): # 每次访问是，修改上次访问时间
+            self.last_seen = datetime.utcnow()
+            db.session.add(self)
+
+    ----------------------------------------------------------------------
+
+
+2. 编辑 控制器
+    flasky/app/main/views.py
+    ----------------------------------------------------------------------
+    from ..models import User
+    ...
+
+    @main.route('/user/<username>')
+    def user(username): # 获取用户资料信息
+        user = User.query.filter_by(username=username).first_or_404()
+        return render_template('user.html', user=user)
+
+    ----------------------------------------------------------------------
+
+3.用户信息展示 html 模板
+   flasky/app/templates/user.html
+   ----------------------------------------------------------------------
+   {% extends "base.html" %}
+
+   {% block title %}Flasky - {{ user.username }}{% endblock %}
+
+   {% block page_content %}
+   <div class="page-header">
+       <h1>{{ user.username }}</h1>
+       {% if user.name or user.location %} <!-- 显示用户名称，或地址 -->
+       <p>
+           {% if user.name %}{{ user.name }}{% endif %}
+           {% if user.location %}
+               from <a href="http://maps.google.com/?q={{ user.location }}">{{ user.location }}</a> <!-- 根据用户填写地址，链接到 google 地图 -->
+           {% endif %}
+       </p>
+       {% endif %}
+       {% if current_user.is_administrator() %}
+       <p><a href="mailto:{{ user.email }}">{{ user.email }}</a></p>  <!-- 管理员可以直接给其他用户发送消息 -->
+       {% endif %}
+       {% if user.about_me %}<p>{{ user.about_me }}</p>{% endif %} <!-- 个人简介-->
+       <p>Member since {{ moment(user.member_since).format('L') }}. Last seen {{ moment(user.last_seen).fromNow() }}.</p> <!-- 注册时间，上次访问时间-->
+   </div>
+   {% endblock %}
+
+   ----------------------------------------------------------------------
+
+
+4。访问入口
+    flasky/app/templates/base.html
+    ----------------------------------------------------------------------
+    <ul class="nav navbar-nav">
+        <li><a href="{{ url_for('main.index') }}">Home</a></li>
+        {% if current_user.is_authenticated %}
+            <li><a href="{{ url_for('main.user', username=current_user.username) }}">Profile</a></li>  <!-- 《《《 -->
+        {% endif %}
+    </ul>
+    <ul class="nav navbar-nav navbar-right">
+        {% if current_user.is_authenticated %}
+            <li class="dropdown">
+                <a href="#" class="dropdown-toggle" data-toggle="dropdown">Account <b class="caret"></b></a>
+                <ul class="dropdown-menu">
+                    <li><a href="{{ url_for('auth.change_password') }}">Change Password</a></li>
+                    <li><a href="{{ url_for('auth.change_email_request') }}">Change Email</a></li>
+                    <li><a href="{{ url_for('auth.logout') }}">Log Out</a></li>
+                </ul>
+            </li>
+        {% else %}
+            <li><a href="{{ url_for('auth.login') }}">Log In</a></li>
+        {% endif %}
+    </ul>
+
+    ----------------------------------------------------------------------
+
+
+5.同步模型到数据库
+    # 进入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    # 生成迁移脚本
+    (venv) huhao:flasky huhao$ ./manage.py db migrate -m 'add user info'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added column 'users.about_me'
+    INFO  [alembic.autogenerate.compare] Detected added column 'users.last_seen'
+    INFO  [alembic.autogenerate.compare] Detected added column 'users.location'
+    INFO  [alembic.autogenerate.compare] Detected added column 'users.member_since'
+    INFO  [alembic.autogenerate.compare] Detected added column 'users.name'
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/92c3beba0325_add_user_info.py ... done
+
+    # 执行往数据库同步迁移命令
+    (venv) huhao:flasky huhao$ ./manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running upgrade e2ae8935feda -> 92c3beba0325, add user info
+
+    # 检测是否同步成功
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> str(User.query)
+    'SELECT users.id AS users_id, users.email AS users_email, users.username AS users_username, users.role_id AS users_role_id, users.password_hash AS users_password_hash, users.confirmed AS users_confirmed, users.name AS users_name, users.location AS users_location, users.about_me AS users_about_me, users.member_since AS users_member_since, users.last_seen AS users_last_seen \nFROM users'
+    >>> exit()
+
+
+
+6.web 测试 (略   )
+    正常登陆，即可在主页，看到"Profile"选项，点击进入，就可查看当前用户信息。

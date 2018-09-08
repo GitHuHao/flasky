@@ -1,0 +1,11 @@
+# clone 并重命名为 git_flasky
+git clone git://github.com/miguelgrinberg/flasky.git git_flasky
+
+# 退一步
+git reset --hard HEAD^
+
+# 检出
+git checkout 1a
+
+# 比对当前代码与版本号对应代码差异
+git diff

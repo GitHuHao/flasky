@@ -1,0 +1,798 @@
+本节功能：完善单元测试，覆盖率测试，web请求测试。
+
+1.单元测试基础上添加覆盖率统计
+    1).安装覆盖率统计依赖模块
+    (venv) huhao:flasky huhao$ pip install coverage
+
+    2).编辑调度脚本
+    flasky/manage.py
+    ----------------------------------------------------------------------
+    ...
+    from flask_migrate import Migrate,MigrateCommand
+
+    # 必须放在 from .. import 之后，app 实例化之前,否则统计不全
+    COV = None
+    if os.environ.get('FLASK_COVERAGE'):
+    	import coverage
+    	COV = coverage.coverage(branch=True, include='app/*') # 覆盖率统计扫描包
+    	COV.start()
+
+    app = create_app(os.getenv('FLASKY_CONFIG') or 'default')
+    ....
+
+    # python manage.py coverable 不执行覆盖率统计
+    # python manage.py coverable --coverage 执行覆盖率统计
+    @manager.command # 将下面函数名注册为启动参数
+    @manager.command
+    def coverable(coverage=False):
+    	"""Run the unit tests."""
+
+    	# 如果命令行启动传入了 --coverage参数，并且环境中未设置 FLASK_COVERAGE
+    	if coverage and not os.environ.get('FLASK_COVERAGE'):
+    		import sys
+    		os.environ['FLASK_COVERAGE'] = '1'
+    		# 将上面顶级代码调度，执行
+    		os.execvp(sys.executable, [sys.executable] + sys.argv)
+
+    	# 执行单元测试
+    	import unittest
+    	tests = unittest.TestLoader().discover('tests')
+    	unittest.TextTestRunner(verbosity=2).run(tests)
+
+    	# 如果开启了覆盖率统计开关，则保存统计结果
+    	if COV:
+    		COV.stop()
+    		COV.save()
+    		print('Coverage Summary:')
+    		COV.report()
+    		basedir = os.path.abspath(os.path.dirname(__file__))
+    		covdir = os.path.join(basedir, 'tmp/coverage') # 统计结果输出路径
+    		COV.html_report(directory=covdir)
+    		print('HTML version: file://%s/index.html' % covdir)
+    		COV.erase() # 擦除
+
+    ----------------------------------------------------------------------
+
+    3）测试
+    (venv) huhao:flasky huhao$ python manage.py coverable --coverage
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+    test_administrator_role (test_user_model.UserModelTestCase) ... ok
+    test_anonymous_user (test_user_model.UserModelTestCase) ... ok
+    test_duplicate_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_expired_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_follows (test_user_model.UserModelTestCase) ... ok
+    test_gravatar (test_user_model.UserModelTestCase) ... ok
+    test_invalid_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_reset_token (test_user_model.UserModelTestCase) ... ok
+    test_moderator_role (test_user_model.UserModelTestCase) ... ok
+    test_no_password_getter (test_user_model.UserModelTestCase) ... ok
+    test_password_salts_are_random (test_user_model.UserModelTestCase) ... ok
+    test_password_setter (test_user_model.UserModelTestCase) ... ok
+    test_password_verification (test_user_model.UserModelTestCase) ... ok
+    test_ping (test_user_model.UserModelTestCase) ... ok
+    test_timestamps (test_user_model.UserModelTestCase) ... ok
+    test_to_json (test_user_model.UserModelTestCase) ... ok
+    test_user_role (test_user_model.UserModelTestCase) ... ok
+    test_valid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_valid_reset_token (test_user_model.UserModelTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 22 tests in 13.355s
+    # 统计报告忽略了'Missing' 内容
+    OK
+    Coverage Summary:
+    Name                        Stmts   Miss Branch BrPart  Cover
+    -------------------------------------------------------------
+    app/__init__.py                38     19      0      0    50%
+    app/api/__init__.py             4      0      0      0   100%
+    app/api/authentication.py      31     19     10      0    29%
+    app/api/comments.py            41     30      8      0    22%
+    app/api/decorators.py          12      3      2      0    64%
+    app/api/errors.py              18     10      0      0    44%
+    app/api/posts.py               37     24      6      0    30%
+    app/api/users.py               31     24      8      0    18%
+    app/auth/__init__.py            4      0      0      0   100%
+    app/auth/forms.py              41      6      6      0    74%
+    app/auth/views.py             112     86     38      0    17%
+    app/decorators.py              15      3      2      0    71%
+    app/email.py                   16      9      0      0    44%
+    app/main/__init__.py            7      1      0      0    86%
+    app/main/errors.py              9      3      0      0    67%
+    app/main/forms.py              36      7      4      0    73%
+    app/main/views.py             177    138     30      0    19%
+    app/models.py                 273    184     50     11    35%
+    -------------------------------------------------------------
+    TOTAL                         902    566    164     11    34%
+    HTML version: file:///Users/huhao/software/idea_proj/flasky/tmp/coverage/index.html <<<< 访问可查阅明细
+
+2.Flas客户端测试(模拟wed服务启动状态，以客户端身份访问服务，检测效果)
+    1).编写单元测试类
+    flasky/tests/test_client.py
+    -------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    import re
+    import unittest
+    from app import create_app, db
+    from app.models import User, Role
+
+    class FlaskClientTestCase(unittest.TestCase):
+    	def setUp(self):
+    		self.app = create_app('testing')
+    		self.app_context = self.app.app_context()
+    		self.app_context.push()
+    		db.create_all()
+    		Role.insert_roles()
+    		self.client = self.app.test_client(use_cookies=True)
+
+    	def tearDown(self):
+    		db.session.remove()
+    		db.drop_all()
+    		self.app_context.pop()
+
+    	def test_home_page(self):
+    		response = self.client.get('/')
+    		self.assertEqual(response.status_code, 200)
+    		self.assertTrue(b'Stranger' in response.data)
+
+    	def test_register_and_login(self):
+    		# register a new account
+    		response = self.client.post('/auth/register', data={
+    			'email': 'john@example.com',
+    			'username': 'john',
+    			'password': 'cat',
+    			'password2': 'cat'
+    			})
+    		self.assertEqual(response.status_code, 302) # 注册被重定向
+
+    		# login with the new account
+    		response = self.client.post('/auth/login', data={
+    			'email': 'john@example.com',
+    			'password': 'cat'
+    			}, follow_redirects=True)
+    		self.assertEqual(response.status_code, 200) # 登陆成功
+    		self.assertTrue(re.search(b'Hello,\s+john!', response.data)) # 提示未激活
+    		self.assertTrue(b'You have not confirmed your account yet' in response.data)
+
+    		# send a confirmation token
+    		user = User.query.filter_by(email='john@example.com').first()
+    		token = user.generate_confirmation_token()# 手动生成一条token
+    		response = self.client.get('/auth/confirm/{}'.format(token),follow_redirects=True) # 顺着重定向操作，往下走
+    		user.confirm(token) # 激活
+    		self.assertEqual(response.status_code, 200) # 成功响应
+    		self.assertTrue(b'You have confirmed your account' in response.data) # 成功激活
+
+    		# log out
+    		response = self.client.get('/auth/logout', follow_redirects=True) # 登出
+    		self.assertEqual(response.status_code, 200)
+    		self.assertTrue(b'You have been logged out' in response.data)
+
+    -------------------------------------------------------------------------
+
+    2）.Config 在测试配置中禁用 CSRF 保护，关闭Flask-WTF 表单校验功能
+    flasky/config.py
+    -------------------------------------------------------------------------
+    # 测试环境
+    class TestingConfig(Config):
+    	TESTING = True
+    	SQLALCHEMY_DATABASE_URI = os.environ.get('TESTING_DATABASE_URL') or 'sqlite:///' + os.path.join(basedir,'data-testing.sqlite')
+    	WTF_CSRF_ENABLED = False  # <<<
+
+    -------------------------------------------------------------------------
+
+    3).执行测试 (注：如果未关闭表单校验，在test_register_and_login 会跑异常)
+    (venv) huhao:flasky huhao$ python manage.py coverable --coverage
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+    test_home_page (test_client.FlaskClientTestCase) ... ok
+    test_register_and_login (test_client.FlaskClientTestCase) ... ok   《《《
+    test_administrator_role (test_user_model.UserModelTestCase) ... ok
+    test_anonymous_user (test_user_model.UserModelTestCase) ... ok
+    test_duplicate_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_expired_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_follows (test_user_model.UserModelTestCase) ... ok
+    test_gravatar (test_user_model.UserModelTestCase) ... ok
+    test_invalid_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_reset_token (test_user_model.UserModelTestCase) ... ok
+    test_moderator_role (test_user_model.UserModelTestCase) ... ok
+    test_no_password_getter (test_user_model.UserModelTestCase) ... ok
+    test_password_salts_are_random (test_user_model.UserModelTestCase) ... ok
+    test_password_setter (test_user_model.UserModelTestCase) ... ok
+    test_password_verification (test_user_model.UserModelTestCase) ... ok
+    test_ping (test_user_model.UserModelTestCase) ... ok
+    test_timestamps (test_user_model.UserModelTestCase) ... ok
+    test_to_json (test_user_model.UserModelTestCase) ... ok
+    test_user_role (test_user_model.UserModelTestCase) ... ok
+    test_valid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_valid_reset_token (test_user_model.UserModelTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 24 tests in 14.007s
+
+    OK
+    Coverage Summary:
+    Name                        Stmts   Miss Branch BrPart  Cover
+    -------------------------------------------------------------
+    app/__init__.py                38     18      0      0    53%
+    app/api/__init__.py             4      0      0      0   100%
+    app/api/authentication.py      31     19     10      0    29%
+    app/api/comments.py            41     30      8      0    22%
+    app/api/decorators.py          12      3      2      0    64%
+    app/api/errors.py              18     10      0      0    44%
+    app/api/posts.py               37     24      6      0    30%
+    app/api/users.py               31     24      8      0    18%
+    app/auth/__init__.py            4      0      0      0   100%
+    app/auth/forms.py              41      4      6      2    83%
+    app/auth/views.py             112     56     38      7    43%
+    app/decorators.py              15      3      2      0    71%
+    app/email.py                   16      0      0      0   100%
+    app/main/__init__.py            7      0      0      0   100%
+    app/main/errors.py              9      3      0      0    67%
+    app/main/forms.py              36      7      4      0    73%
+    app/main/views.py             177    127     30      2    26%
+    app/models.py                 273    181     50     10    37%
+    -------------------------------------------------------------
+    TOTAL                         902    509    164     21    41%
+    HTML version: file:///Users/huhao/software/idea_proj/flasky/tmp/coverage/index.html
+    (venv) huhao:flasky huhao$
+
+3.api接口测试
+    1).编写测试类
+    flasky/tests/test_api.py
+    -------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+    import unittest
+    import json
+    import re
+    from base64 import b64encode
+    from app import create_app, db
+    from app.models import User, Role, Post, Comment
+
+
+    class APITestCase(unittest.TestCase):
+        def setUp(self):
+            self.app = create_app('testing')
+            self.app_context = self.app.app_context()
+            self.app_context.push()
+            db.create_all()
+            Role.insert_roles()
+            self.client = self.app.test_client()
+
+        def tearDown(self):
+            db.session.remove()
+            db.drop_all()
+            self.app_context.pop()
+
+        def get_api_headers(self, username, password):
+    	    # 创建请求头
+            return {
+                'Authorization': 'Basic ' + b64encode(
+                    (username + ':' + password).encode('utf-8')).decode('utf-8'),
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+
+        def test_404(self):
+    	    # 404 测试
+            response = self.client.get('/wrong/url',headers=self.get_api_headers('email', 'password'))
+            self.assertEqual(response.status_code, 404)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertEqual(json_response['error'], 'not found')
+
+        def test_no_auth(self):
+    	    #
+            response = self.client.get('/api/v1.0/posts/',content_type='application/json')
+            self.assertEqual(response.status_code, 401)
+
+        def test_bad_auth(self):
+            # add a user
+            r = Role.query.filter_by(name='User').first()
+            self.assertIsNotNone(r)
+            u = User(email='john@example.com', password='cat', confirmed=True,
+                     role=r)
+            db.session.add(u)
+            db.session.commit()
+
+            # authenticate with bad password
+            response = self.client.get(
+                '/api/v1.0/posts/',
+                headers=self.get_api_headers('john@example.com', 'dog'))
+            self.assertEqual(response.status_code, 401)
+
+        def test_token_auth(self):
+            # add a user
+            r = Role.query.filter_by(name='User').first()
+            self.assertIsNotNone(r)
+            u = User(email='john@example.com', password='cat', confirmed=True,role=r)
+            db.session.add(u)
+            db.session.commit()
+
+            # issue a request with a bad token
+            response = self.client.get(
+                '/api/v1.0/posts/',
+                headers=self.get_api_headers('bad-token', ''))
+            self.assertEqual(response.status_code, 401)
+
+            # get a token
+            response = self.client.post('/api/v1.0/tokens/',headers=self.get_api_headers('john@example.com', 'cat'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertIsNotNone(json_response.get('token'))
+            token = json_response['token']
+
+            # issue a request with the token
+            response = self.client.get('/api/v1.0/posts/',
+                headers=self.get_api_headers(token, ''))
+            self.assertEqual(response.status_code, 200)
+
+        def test_anonymous(self):
+            response = self.client.get(
+                '/api/v1.0/posts/',
+                headers=self.get_api_headers('', ''))
+            self.assertEqual(response.status_code, 401)
+
+        def test_unconfirmed_account(self):
+            # add an unconfirmed user
+            r = Role.query.filter_by(name='User').first()
+            self.assertIsNotNone(r)
+            u = User(email='john@example.com', password='cat', confirmed=False,
+                     role=r)
+            db.session.add(u)
+            db.session.commit()
+
+            # get list of posts with the unconfirmed account
+            response = self.client.get(
+                '/api/v1.0/posts/',
+                headers=self.get_api_headers('john@example.com', 'cat'))
+            self.assertEqual(response.status_code, 403)
+
+        def test_posts(self):
+            # add a user
+            r = Role.query.filter_by(name='User').first()
+            self.assertIsNotNone(r)
+            u = User(email='john@example.com', password='cat', confirmed=True,
+                     role=r)
+            db.session.add(u)
+            db.session.commit()
+
+            # write an empty post
+            response = self.client.post(
+                '/api/v1.0/posts/',
+                headers=self.get_api_headers('john@example.com', 'cat'),
+                data=json.dumps({'body': ''}))
+            self.assertEqual(response.status_code, 400)
+
+            # write a post
+            response = self.client.post(
+                '/api/v1.0/posts/',
+                headers=self.get_api_headers('john@example.com', 'cat'),
+                data=json.dumps({'body': 'body of the *blog* post'}))
+            self.assertEqual(response.status_code, 201)
+            url = response.headers.get('Location')
+            self.assertIsNotNone(url)
+
+            # get the new post
+            response = self.client.get(
+                url,
+                headers=self.get_api_headers('john@example.com', 'cat'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertEqual('http://localhost' + json_response['url'], url)
+            self.assertEqual(json_response['body'], 'body of the *blog* post')
+            self.assertEqual(json_response['body_html'],
+                            '<p>body of the <em>blog</em> post</p>')
+            json_post = json_response
+
+            # get the post from the user
+            response = self.client.get(
+                '/api/v1.0/users/{}/posts/'.format(u.id),
+                headers=self.get_api_headers('john@example.com', 'cat'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertIsNotNone(json_response.get('posts'))
+            self.assertEqual(json_response.get('count', 0), 1)
+            self.assertEqual(json_response['posts'][0], json_post)
+
+            # get the post from the user as a follower
+            response = self.client.get(
+                '/api/v1.0/users/{}/timeline/'.format(u.id),
+                headers=self.get_api_headers('john@example.com', 'cat'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertIsNotNone(json_response.get('posts'))
+            self.assertEqual(json_response.get('count', 0), 1)
+            self.assertEqual(json_response['posts'][0], json_post)
+
+            # edit post
+            response = self.client.put(
+                url,
+                headers=self.get_api_headers('john@example.com', 'cat'),
+                data=json.dumps({'body': 'updated body'}))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertEqual('http://localhost' + json_response['url'], url)
+            self.assertEqual(json_response['body'], 'updated body')
+            self.assertEqual(json_response['body_html'], '<p>updated body</p>')
+
+        def test_users(self):
+            # add two users
+            r = Role.query.filter_by(name='User').first()
+            self.assertIsNotNone(r)
+            u1 = User(email='john@example.com', username='john',
+                      password='cat', confirmed=True, role=r)
+            u2 = User(email='susan@example.com', username='susan',
+                      password='dog', confirmed=True, role=r)
+            db.session.add_all([u1, u2])
+            db.session.commit()
+
+            # get users
+            response = self.client.get(
+                '/api/v1.0/users/{}'.format(u1.id),
+                headers=self.get_api_headers('susan@example.com', 'dog'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertEqual(json_response['username'], 'john')
+            response = self.client.get(
+                '/api/v1.0/users/{}'.format(u2.id),
+                headers=self.get_api_headers('susan@example.com', 'dog'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertEqual(json_response['username'], 'susan')
+
+        def test_comments(self):
+            # add two users
+            r = Role.query.filter_by(name='User').first()
+            self.assertIsNotNone(r)
+            u1 = User(email='john@example.com', username='john',
+                      password='cat', confirmed=True, role=r)
+            u2 = User(email='susan@example.com', username='susan',
+                      password='dog', confirmed=True, role=r)
+            db.session.add_all([u1, u2])
+            db.session.commit()
+
+            # add a post
+            post = Post(body='body of the post', author=u1)
+            db.session.add(post)
+            db.session.commit()
+
+            # write a comment
+            response = self.client.post(
+                '/api/v1.0/posts/{}/comments/'.format(post.id),
+                headers=self.get_api_headers('susan@example.com', 'dog'),
+                data=json.dumps({'body': 'Good [post](http://example.com)!'}))
+            self.assertEqual(response.status_code, 201)
+            json_response = json.loads(response.get_data(as_text=True))
+            url = response.headers.get('Location')
+            self.assertIsNotNone(url)
+            self.assertEqual(json_response['body'],
+                            'Good [post](http://example.com)!')
+            self.assertEqual(
+                re.sub('<.*?>', '', json_response['body_html']), 'Good post!')
+
+            # get the new comment
+            response = self.client.get(
+                url,
+                headers=self.get_api_headers('john@example.com', 'cat'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertEqual('http://localhost' + json_response['url'], url)
+            self.assertEqual(json_response['body'],
+                            'Good [post](http://example.com)!')
+
+            # add another comment
+            comment = Comment(body='Thank you!', author=u1, post=post)
+            db.session.add(comment)
+            db.session.commit()
+
+            # get the two comments from the post
+            response = self.client.get(
+                '/api/v1.0/posts/{}/comments/'.format(post.id),
+                headers=self.get_api_headers('susan@example.com', 'dog'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertIsNotNone(json_response.get('comments'))
+            self.assertEqual(json_response.get('count', 0), 2)
+
+            # get all the comments
+            response = self.client.get(
+                '/api/v1.0/posts/{}/comments/'.format(post.id),
+                headers=self.get_api_headers('susan@example.com', 'dog'))
+            self.assertEqual(response.status_code, 200)
+            json_response = json.loads(response.get_data(as_text=True))
+            self.assertIsNotNone(json_response.get('comments'))
+            self.assertEqual(json_response.get('count', 0), 2)
+
+    -------------------------------------------------------------------------
+
+    2).执行测试
+    (venv) huhao:flasky huhao$ python manage.py coverable --coverage
+    test_404 (test_api.APITestCase) ... ok
+    test_anonymous (test_api.APITestCase) ... ok
+    test_bad_auth (test_api.APITestCase) ... ok
+    test_comments (test_api.APITestCase) ... ok
+    test_no_auth (test_api.APITestCase) ... ok
+    test_posts (test_api.APITestCase) ... ok
+    test_token_auth (test_api.APITestCase) ... ok
+    test_unconfirmed_account (test_api.APITestCase) ... ok
+    test_users (test_api.APITestCase) ... ok
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+    test_home_page (test_client.FlaskClientTestCase) ... ok
+    test_register_and_login (test_client.FlaskClientTestCase) ... ok
+    test_admin_home_page (test_selenium.SeleniumTestCase) ... skipped 'Web browser not available'
+    test_administrator_role (test_user_model.UserModelTestCase) ... ok
+    test_anonymous_user (test_user_model.UserModelTestCase) ... ok
+    test_duplicate_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_expired_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_follows (test_user_model.UserModelTestCase) ... ok
+    test_gravatar (test_user_model.UserModelTestCase) ... ok
+    test_invalid_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_reset_token (test_user_model.UserModelTestCase) ... ok
+    test_moderator_role (test_user_model.UserModelTestCase) ... ok
+    test_no_password_getter (test_user_model.UserModelTestCase) ... ok
+    test_password_salts_are_random (test_user_model.UserModelTestCase) ... ok
+    test_password_setter (test_user_model.UserModelTestCase) ... ok
+    test_password_verification (test_user_model.UserModelTestCase) ... ok
+    test_ping (test_user_model.UserModelTestCase) ... ok
+    test_timestamps (test_user_model.UserModelTestCase) ... ok
+    test_to_json (test_user_model.UserModelTestCase) ... ok
+    test_user_role (test_user_model.UserModelTestCase) ... ok
+    test_valid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_valid_reset_token (test_user_model.UserModelTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 34 tests in 22.290s
+
+    OK (skipped=1)
+    Coverage Summary:
+    Name                        Stmts   Miss Branch BrPart  Cover
+    -------------------------------------------------------------
+    app/__init__.py                38     18      0      0    53%
+    app/api/__init__.py             4      0      0      0   100%
+    app/api/authentication.py      30      2     10      2    90%
+    app/api/comments.py            41     12      8      2    63%
+    app/api/decorators.py          12      1      2      1    86%
+    app/api/errors.py              18      0      0      0   100%
+    app/api/posts.py               37      3      6      3    86%
+    app/api/users.py               31      4      8      4    79%
+    app/auth/__init__.py            4      0      0      0   100%
+    app/auth/forms.py              41      4      6      2    83%
+    app/auth/views.py             112     56     38      7    43%
+    app/decorators.py              15      3      2      0    71%
+    app/email.py                   16      0      0      0   100%
+    app/fake.py                    24     17      4      0    25%
+    app/main/__init__.py            7      0      0      0   100%
+    app/main/errors.py             21     11      6      1    41%
+    app/main/forms.py              36      7      4      0    73%
+    app/main/views.py             177    127     30      2    26%
+    app/models.py                 273    157     50     11    45%
+    -------------------------------------------------------------
+    TOTAL                         937    422    174     35    52%
+    HTML version: file:///Users/huhao/software/idea_proj/flasky/tmp/coverage/index.html
+    (venv) huhao:flasky huhao$
+
+4.selenium Http测试
+    1).安装依赖
+    (venv) huhao:flasky huhao$ pip install selenium
+    (venv) huhao:flasky huhao$ brew install chromedriver
+
+    2).编写测试类
+    flasky/tests/test_selenium.py
+    -------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+
+
+    import re
+    import threading
+    import time
+    import unittest
+    from selenium import webdriver
+    from app import create_app, db, fake
+    from app.models import Role, User, Post
+
+
+    class SeleniumTestCase(unittest.TestCase):
+        client = None
+
+        @classmethod
+        def setUpClass(cls):
+            # start Chrome
+            options = webdriver.ChromeOptions() # brew install webdriver
+            options.add_argument('headless')
+            try:
+                cls.client = webdriver.Chrome(chrome_options=options) # 拉取浏览器
+            except:
+                pass
+
+            # skip these tests if the browser could not be started
+            if cls.client: # 成功启动浏览器插件
+                # create the application
+                cls.app = create_app('testing') # 创建 test 环境
+                cls.app_context = cls.app.app_context()
+                cls.app_context.push()
+
+                # suppress logging to keep unittest output clean
+                import logging
+                logger = logging.getLogger('werkzeug') # 日志
+                logger.setLevel("ERROR")
+
+                # create the database and populate with some fake data
+                db.create_all()
+                Role.insert_roles() # 初始hua  roles
+                fake.users(10)
+                fake.posts(10)
+
+                # add an administrator user
+                admin_role = Role.query.filter_by(name='Administrator').first()
+                admin = User(email='john@example.com',
+                             username='john', password='cat',
+                             role=admin_role, confirmed=True)
+                db.session.add(admin)
+                db.session.commit()
+
+                # start the Flask server in a thread
+                cls.server_thread = threading.Thread(target=cls.app.run,kwargs={'debug': False}) # 使用子线程启动 web 服务
+                cls.server_thread.start()
+
+                # give the server a second to ensure it is up
+                time.sleep(1)  # 休眠一秒，等待web服务启动完毕
+
+        @classmethod
+        def tearDownClass(cls):
+            if cls.client:
+                # stop the flask server and the browser
+                cls.client.get('http://localhost:5000/shutdown') # 通过http 请求，发送关机命令
+                cls.client.quit() # server 线程退出
+                cls.server_thread.join() # 当前线程接入，夏季向下执行
+
+                # destroy database
+                db.drop_all()
+                db.session.remove()
+
+                # remove application context
+                cls.app_context.pop()
+
+        def setUp(self):
+            if not self.client: # 浏览器查看未启动成功，停止
+                self.skipTest('Web browser not available')
+
+        def tearDown(self):
+            pass
+
+        def test_admin_home_page(self):
+            # navigate to home page
+            self.client.get('http://localhost:5000/')
+            self.assertTrue(re.search('Hello,\s+Stranger!',self.client.page_source)) # 测试匿名登录主页
+
+            # navigate to login page
+            self.client.find_element_by_link_text('Log In').click() # 测试点击 Log In
+            self.assertIn('<h1>Login</h1>', self.client.page_source)
+
+            # login
+            self.client.find_element_by_name('email').send_keys('john@example.com') # 测试登录
+            self.client.find_element_by_name('password').send_keys('cat')
+            self.client.find_element_by_name('submit').click()
+            self.assertTrue(re.search('Hello,\s+john!', self.client.page_source)) # 登录成功
+
+            # navigate to the user's profile page
+            self.client.find_element_by_link_text('Profile').click() # 进入profile页
+            self.assertIn('<h1>john</h1>', self.client.page_source)
+
+    -------------------------------------------------------------------------
+
+    3).编辑主控脚本视图跳转路由器，添加停机业务
+    flasky/app/main/views.py
+    -------------------------------------------------------------------------
+    @main.route('/shutdown')
+    def server_shutdown():  # test_selenium.py 测试完毕，执行停机操作
+    	if not current_app.testing:
+    		abort(404) # 非单元测试环境，禁止运行
+    	shutdown = request.environ.get('werkzeug.server.shutdown') # 获取停机函数
+    	if not shutdown:
+    		abort(500)
+    	shutdown()
+    	return 'Shutting down...'
+
+    -------------------------------------------------------------------------
+
+    4).测试
+    (venv) huhao:flasky huhao$ ./manage.py coverable --coverage
+    test_404 (test_api.APITestCase) ... ok
+    test_anonymous (test_api.APITestCase) ... ok
+    test_bad_auth (test_api.APITestCase) ... ok
+    test_comments (test_api.APITestCase) ... ok
+    test_no_auth (test_api.APITestCase) ... ok
+    test_posts (test_api.APITestCase) ... ok
+    test_token_auth (test_api.APITestCase) ... ok
+    test_unconfirmed_account (test_api.APITestCase) ... ok
+    test_users (test_api.APITestCase) ... ok
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+    test_home_page (test_client.FlaskClientTestCase) ... ok
+    test_register_and_login (test_client.FlaskClientTestCase) ... ok  <<< 启动 web 服务
+     * Serving Flask app "app" (lazy loading)
+     * Environment: production
+       WARNING: Do not use the development server in a production environment.
+       Use a production WSGI server instead.
+     * Debug mode: off
+    test_admin_home_page (test_selenium.SeleniumTestCase) ... ok
+    test_administrator_role (test_user_model.UserModelTestCase) ... ok
+    test_anonymous_user (test_user_model.UserModelTestCase) ... ok
+    test_duplicate_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_expired_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_follows (test_user_model.UserModelTestCase) ... ok
+    test_gravatar (test_user_model.UserModelTestCase) ... ok
+    test_invalid_confirmation_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_invalid_reset_token (test_user_model.UserModelTestCase) ... ok
+    test_moderator_role (test_user_model.UserModelTestCase) ... ok
+    test_no_password_getter (test_user_model.UserModelTestCase) ... ok
+    test_password_salts_are_random (test_user_model.UserModelTestCase) ... ok
+    test_password_setter (test_user_model.UserModelTestCase) ... ok
+    test_password_verification (test_user_model.UserModelTestCase) ... ok
+    test_ping (test_user_model.UserModelTestCase) ... ok
+    test_timestamps (test_user_model.UserModelTestCase) ... ok
+    test_to_json (test_user_model.UserModelTestCase) ... ok
+    test_user_role (test_user_model.UserModelTestCase) ... ok
+    test_valid_email_change_token (test_user_model.UserModelTestCase) ... ok
+    test_valid_reset_token (test_user_model.UserModelTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 34 tests in 59.494s
+
+    OK
+    Coverage Summary:
+    Name                        Stmts   Miss Branch BrPart  Cover
+    -------------------------------------------------------------
+    app/__init__.py                38     18      0      0    53%
+    app/api/__init__.py             4      0      0      0   100%
+    app/api/authentication.py      30      2     10      2    90%
+    app/api/comments.py            41     12      8      2    63%
+    app/api/decorators.py          12      1      2      1    86%
+    app/api/errors.py              18      0      0      0   100%
+    app/api/posts.py               37      3      6      3    86%
+    app/api/users.py               31      4      8      4    79%
+    app/auth/__init__.py            4      0      0      0   100%
+    app/auth/forms.py              41      4      6      2    83%
+    app/auth/views.py             112     55     38      6    45%
+    app/decorators.py              15      3      2      0    71%
+    app/email.py                   16      0      0      0   100%
+    app/fake.py                    24      2      4      0    93%
+    app/main/__init__.py            7      0      0      0   100%
+    app/main/errors.py             21     11      6      1    41%
+    app/main/forms.py              36      7      4      0    73%
+    app/main/views.py             185    124     34      4    31%
+    app/models.py                 273    155     50     11    46%
+    -------------------------------------------------------------
+    TOTAL                         945    401    178     36    55%
+    HTML version: file:///Users/huhao/software/idea_proj/flasky/tmp/coverage/index.html
+    (venv) huhao:flasky huhao$

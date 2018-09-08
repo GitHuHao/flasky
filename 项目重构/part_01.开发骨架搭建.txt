@@ -1,0 +1,760 @@
+1.创建 flasky 项目目录
+
+
+2.配置虚拟环境
+    flasky
+        |- venv
+
+    mkdir venv
+    virtualenv venv
+    source venv/bin/activate 激活 （deactivate 取消激活）
+
+    配置项目使用当前创建的虚拟环境(File > Project Structure > SDKs (+ Python.. Existed Interceptor)) > Modules 指向配置好的环境
+
+    注: 虚拟环境使用
+    方案1：每次都使用 source venv/bin/activate 激活环境，然后直接调用 python 、pip ,默认指向的就是 venv/bin中的服务
+    方案2：配置别名 mypyenv2,mypip2 直接指向venv/bin 中服务，在全局中使用
+
+
+3.一次性安装所需全部环境依赖
+    鉴于当前项目全部依赖环境已知，且都保存在 flasky/requirements.txt 文件中，可以一次性配齐全部环境
+    mypip2 install -r requirements.txt
+
+
+4.编辑全局配置脚本 flasky/config.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    import os
+    basedir = os.path.abspath(os.path.dirname(__file__)) # 获取当前脚本所在路径，作为数据库存储数据文件目录
+
+    # 基础配置
+    class Config:
+        SECRET_KEY = os.environ.get('SECRET_KEY') or 'hard to guess string' # http 请求加密字符串，逻辑或
+        MAIL_SERVER = os.environ.get('MAIL_SERVER','smtp.qq.com') # email 模块 通过 qq 邮件服务器发送
+        MAIL_PORT = int(os.environ.get('MAIL_PORT','587')) # stmp 端口
+        MAIL_USE_TLS = os.environ.get('MAIL_USE_TLS','true').lower() in ['true','on',1] # 从环境匹配是否使用了 TLS 连接
+        MAIL_USERNAME = os.environ.get('MAIL_USERNAME') # 使用邮件服务名称
+        MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD') # 使用邮件服务密钥
+        FLASKY_MAIL_SUBJECT_PREFIX = '[Flasky]' # 邮件主题前缀
+        FLASKY_MAIL_SENDER = 'Flasky Admin <flasky@example.com>' # 邮件主题显示的发件人
+        FLASKY_ADMIN = os.environ.get('FLASKY_ADMIN') # 管理员 (新用户登录，需要通知的人)
+        SQLALCHEMY_TRACK_MODIFICATIONS = False # 是否主动追踪ORM模板变动 (否)
+
+        @staticmethod # 静态方法，用与执行部分待定的初始化操作
+        def init_app(app):
+            pass
+
+    # 开发环境
+    class DevelopmentConfig(Config):
+        DEBUG = True
+        SQLALCHEMY_DATABASE_URI = os.environ.get('DEV_DATABASE_URL') or 'sqlite:///' + os.path.join(basedir,'data-dev.sqlite')
+
+    # 测试环境
+    class TestingConfig(Config):
+        TESTING = True
+        SQLALCHEMY_DATABASE_URI = os.environ.get('TESTING_DATABASE_URL') or 'sqlite:///' + os.path.join(basedir,'data-testing.sqlite')
+
+    # 生产环境
+    class ProductionConfig(Config):
+        SQLALCHEMY_DATABASE_URI = os.environ.get('PRODUCTION_DATABASE_URL') or 'sqlite:///' + os.path.join(basedir,'data-production.sqlite')
+
+    # 配置字典
+    config = {
+        'development':DevelopmentConfig,
+        'testing':TestingConfig,
+        'production':ProductionConfig,
+        'default':DevelopmentConfig
+        }
+
+    ------------------------------------------------------------------------------------------------
+
+
+5.编辑全局app实例化脚本（注册中心）  flasky/app/__init__.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    from flask import Flask
+    from flask_bootstrap import Bootstrap
+    from flask_mail import Mail
+    from flask_moment import Moment
+    from flask_sqlalchemy import SQLAlchemy
+
+    from config import config
+
+    bootstrap = Bootstrap() # 前端展示组件
+    mail = Mail() # 邮件发送模块
+    moment = Moment() # 时间，语言 本地化模块
+    db = SQLAlchemy() # 数据库模块
+
+    # 工厂函数，实例化 app 对象
+    def create_app(config_name):
+        app = Flask(__name__) # 创建实例
+        app.config.from_object(config[config_name]) # 配置基于传入配置 key ,绑定配置
+        config[config_name].init_app(app) # 配置模块中，注入 app,并执行相应初始化工作
+
+        bootstrap.init_app(app) # 初始化 前端组件
+        mail.init_app(app) # 初始化 邮件模块
+        moment.init_app(app) # 初始化 时间 语言 本地化模块
+        db.init_app(app) # 初始化 数据库模块
+
+        # 注册路由控制器逻辑 (主要是各种业务模块蓝本)
+
+        return app
+
+    ------------------------------------------------------------------------------------------------
+
+
+6.编辑邮件发送模块 flasky/app/email.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    from flask import current_app,render_template
+    from flask_mail import Message
+    from threading import Thread
+    from . import mail
+
+    def send_async_email(app,msg):
+        with app.app_context():
+            mail.send(msg)
+
+
+    def send_mail(to,subject,template,**kwargs):
+        app = current_app.__get_current_object() # 获取当为应用
+        # 组装邮件
+        msg = Message(subject=app.config['FLASKY_MAIL_SUBJECT_PREFIX']+subject,
+                      sender=app.config['FLASKY_MAIL_SENDER'],
+                      recipients=[to])
+
+        # 渲染邮件模板 模块默认存放在 当前脚本所在目录的 templates 子目录下
+        msg.body = render_template(template+'.txt',**kwargs) # .txt 模版
+        msg.html = render_template(template+'.html',**kwargs) # .html 模板
+
+        async_thread = Thread(target=send_async_email,args=[app,msg]) # 创建子线程，异步发送邮件
+        async_thread.start()
+
+        return async_thread
+
+    ------------------------------------------------------------------------------------------------
+
+
+7.编辑邮件模板 flasky/app/templates/mail/new_user.html, new_user.txt
+    new_user.html
+    ------------------------------------------------------------------------------------------------
+    User <b> {{ user.username }}</b> has joined.
+    ------------------------------------------------------------------------------------------------
+
+    new_user.txt
+    ------------------------------------------------------------------------------------------------
+    User {{ user.username }} has joined ...
+    ------------------------------------------------------------------------------------------------
+
+注：Mark Directory As (Template Directory) 标记为模板目录
+
+
+8.编辑 ORM 模板 flasky/app/models.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    from . import db
+
+    class Role(db.Model):
+        __tablename__ = 'roles1'
+        id = db.Column(db.Integer,primary_key=True)
+        name = db.Column(db.String(64),unique=True)
+        users = db.relationship('User',backref='role',lazy='dynamic') # Role 表设置集合属性 users,此处反向往 User实例注入了role 属性
+
+        def __repr__(self):
+            return '<Role %r>' % self.name
+
+    class User(db.Model):
+        __tablename__ = 'users1'
+        id = db.Column(db.Integer,primary_key=True)
+        username = db.Column(db.String(64),unique=True,index=True)
+        role_id = db.Column(db.Integer,db.ForeignKey('roles1.id')) # User 表通过外键 role_id 关联 Role 表主键
+
+        def __repr__(self):
+            return '<User %r>' % self.username
+
+    ------------------------------------------------------------------------------------------------
+
+
+9.编辑 主控逻辑 蓝本 (该脚本可至今当控制器app使用) flasky/app/main/__init__.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    from flask import Blueprint
+
+    main = Blueprint('main',__name__)
+
+    ------------------------------------------------------------------------------------------------
+
+
+10.编辑 主控逻辑 视图跳转脚本 flasky/app/main/views.py
+    ------------------------------------------------------------------------------------------------
+    from flask import render_template
+    from . import main
+
+
+    # 主页
+    @main.route('/')
+    def index():
+        raise InternalServerError('test')
+        return render_template('index.html')
+
+    ------------------------------------------------------------------------------------------------
+
+
+11.编辑 主控逻辑 index 页模板 flasky/app/templates/base.html, index.html
+    base.html # 在bootstrap/base.html 基础上构建自己的 base 页
+    ------------------------------------------------------------------------------------------------
+    {% extends "bootstrap/base.html" %}
+
+    {% block title %}Flasky{% endblock %}
+
+    {% block head %}
+        {{ super() }}
+        <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+        <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    {% endblock %}
+
+    {% block navbar %}
+        <div class="navbar navbar-inverse" role="navigation">
+            <div class="container">
+                <div class="navbar-header">
+                    <button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
+                        <span class="sr-only">Toggle navigation</span>
+                        <span class="icon-bar"></span>
+                        <span class="icon-bar"></span>
+                        <span class="icon-bar"></span>
+                    </button>
+                    <a class="navbar-brand" href="{{ url_for('main.index') }}">Flasky</a>
+                </div>
+                <div class="navbar-collapse collapse">
+                    <ul class="nav navbar-nav">
+                        <li><a href="{{ url_for('main.index') }}">Home</a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    {% endblock %}
+
+    {% block content %}
+        <div class="container">
+            {% for message in get_flashed_messages() %}
+                <div class="alert alert-warning">
+                    <button type="button" class="close" data-dismiss="alert">&times;</button>
+                    {{ message }}
+                </div>
+            {% endfor %}
+
+            {% block page_content %}{% endblock %}
+        </div>
+    {% endblock %}
+
+    {% block scripts %}
+        {{ super() }}
+        {{ moment.include_moment() }}
+    {% endblock %}
+
+    ------------------------------------------------------------------------------------------------
+
+    index.html # 继承自定义  base页，编辑自己的 index 页
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+
+    {% block title %} Flasky {% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Hello!</h1>
+        </div>
+    {% endblock %}
+    ------------------------------------------------------------------------------------------------
+
+
+12.编辑主控模块，异常跳转脚本 flasky/app/main/errors.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+        在蓝本中编写错误处理程序，如果使用errorhandler 修饰器，那么只有在蓝本中参会触发异常处理程序，要想让异常处理程序适用于全局，需要使用
+        app_errorhandler
+
+    """
+    from flask import render_template
+    from . import main
+
+    @main.app_errorhandler(404)
+    def page_not_found(e):
+        return render_template('404.html'),404
+
+    @main.app_errorhandler(500)
+    def internal_server_error(e):
+        return render_template('500.html'),500
+
+    ------------------------------------------------------------------------------------------------
+
+
+13.编辑 error.py 映射的 404,505 异常页模板 flasky/app/templates/404.html,500.html
+    404.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+
+    {% block title %}Flasky - Page Not Found{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Not Found</h1>
+        </div>
+    {% endblock %}
+    ------------------------------------------------------------------------------------------------
+
+    500.html
+    ------------------------------------------------------------------------------------------------
+    {% extends "base.html" %}
+
+    {% block title %}Flasky - Internal Server Error{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Internal Server Error</h1>
+        </div>
+    {% endblock %}
+    ------------------------------------------------------------------------------------------------
+
+
+14.编辑 主控逻辑 视图跳转脚本，添加500，异常触发控制器 flasky/app/main/views.py
+   注：404 异常是指，发送请求时为找到匹配的资源，而不是返回响应时未找到模板
+    ------------------------------------------------------------------------------------------------
+    from werkzeug.exceptions import InternalServerError
+
+    @main.route('/500')
+    def test_internal_server_error():
+        raise InternalServerError('test')
+        return render_template('abc.html')
+
+    ------------------------------------------------------------------------------------------------
+
+15. 将主控模块 视图跳转脚本 和 全局异常处理脚本 发布到所在模块 flasky/app/__init__.py 文件
+    ------------------------------------------------------------------------------------------------
+    from flask import Blueprint
+
+    main = Blueprint('main',__name__)
+
+    # errors.py 和 views.py 页都引用了 __init__.py 的蓝本main实例,为避免循环引用问题，需要将下面这个 from import，放在 main 实例定义之后
+    from . import views, errors
+    ------------------------------------------------------------------------------------------------
+
+
+16. app注册中心，注册主控模块蓝本  flasky/app/__init__.py
+    ------------------------------------------------------------------------------------------------
+    ...
+    # 此处引入主控蓝本操作，必须放在顶级代码预加载，而不能写入create_app 函数内，否则会出现导包异常
+    from .main import main as main_blueprint
+    ...
+    def create_app(config_name):
+        ...
+        # 1.注册主控模块蓝本
+        app.register_blueprint(main_blueprint)
+
+    ------------------------------------------------------------------------------------------------
+
+
+17. 编辑启动模块 flasky/manage.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    # 获取系统环境
+    import os
+    # 创建app实例和数据库实例
+    from app import create_app,db
+    # 获取数据据类模板
+    from app.models import User,Role
+    # 使用 Manage 丰富启动参数支持，和 Shell 环境支持
+    from flask_script import Manager,Shell
+    # 获取脚本迁移模块支持
+    from flask_migrate import Migrate,MigrateCommand
+
+    app = create_app(os.getenv('FLASKY_CONFIG') or 'default')
+    manager = Manager(app)
+    migrate = Migrate(app,db)
+
+    def make_shell_context():
+        return dict(app=app,db=db,User=User,Role=Role)
+
+    # 使用 python manage.py shell 目录启动，自动执行make_shell_context，并将相应 实例字典引入shell环境
+    manager.add_command('shell',Shell(make_context=make_shell_context))
+
+    # 使用 python manage.py db 启动时，自动映射 MigrateCommand类
+    manager.add_command('db',MigrateCommand)
+
+    if __name__=="__main__":
+        manager.run()
+
+    ------------------------------------------------------------------------------------------------
+
+
+18. 主控模块跳转测试
+    1）runserver 模式启动 app,测试app与主控跳转模块集成是否成功
+    huhao:flasky huhao$ source venv/bin/activate 进入虚拟环境 shell
+    (venv) huhao:flasky huhao$ python manage.py runserver --host 127.0.0.1
+
+    2）浏览器访问 http://127.0.0.1/ , index页
+
+    3）浏览器访问 http://127.0.0.1/404 , 404页
+
+    3）浏览器访问 http://127.0.0.1/500 , 500页
+
+
+19. 数据库模块ORM映射测试
+    1）shell 模式启动 app,测试与app集成的数据库模块，是否畅通
+    huhao:flasky huhao$ source venv/bin/activate 进入虚拟环境 shell
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>>
+
+    2) shell模式，成功执行 make_shell_context 引入相应实例
+    # 注 flasky/manage.py > manager.add_command('shell',Shell(make_context=make_shell_context)) 将make_shell_context函数执行绑定到 shell 启动参数上
+    >>> db
+    <SQLAlchemy engine=sqlite:////Users/huhao/software/idea_proj/flasky/data-dev.sqlite>
+
+    3) # 初始化数据库，生成 flasky/data-dev.sqlite （config.py中配置默认环境为 dev）
+    >>> db.create_all()
+
+    4) 创建游离态 admin_role 对象,提交数据库，然后查库，检测ORM 映射效果
+    >>> admin_role = Role(name='Admin')
+    >>> db.session.add(admin_role)       # 提交数据库
+    >>> db.session.commit()
+    >>> Role.query.all()                 # 查库
+    [<Role u'Admin'>]
+
+    注：某次为执行 db.create_all() 初始化建库逻辑时，添加并提交 admin_role，
+    出现 InvalidRequestError: This Session's transaction has been rolled back due to a previous exception during flush.异常
+    通过如下方案解决
+    >>> db.session.rollback()
+    >>> db.session.commit()
+
+
+20. Migrate 代码迁移模块集成测试
+    1) 创建迁移仓库
+    # 注 flasky/manage.py > manager.add_command('db',MigrateCommand) 已经成功将库迁移命令MigrateCommand 绑定到 'db' 启动参数上
+    (venv) huhao:flasky huhao$ python manage.py db init
+       Creating directory /Users/huhao/software/idea_proj/flasky/migrations ... done
+          Creating directory /Users/huhao/software/idea_proj/flasky/migrations/versions ... done
+          Generating /Users/huhao/software/idea_proj/flasky/migrations/alembic.ini ... done
+          Generating /Users/huhao/software/idea_proj/flasky/migrations/env.py ... done
+          Generating /Users/huhao/software/idea_proj/flasky/migrations/env.pyc ... done
+          Generating /Users/huhao/software/idea_proj/flasky/migrations/README ... done
+          Generating /Users/huhao/software/idea_proj/flasky/migrations/script.py.mako ... done
+          Please edit configuration/connection/logging settings in '/Users/huhao/software/idea_proj/flasky/migrations/alembic.ini' before proceeding.
+
+        flasky/migrations
+            |- versions
+            |. alembic.ini
+            |. env.py
+            |. README
+            |. script.py.mako
+
+    2) 首次执行 ORM 同步到数据库 (发现刚初始化完，根本没有需要同步到数据库的内容)
+    (venv) huhao:flasky huhao$ python manage.py db migrate -m 'init migrate-script'
+       INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+       INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+       INFO  [alembic.env] No changes in schema detected.
+
+    3）修改 flasky/app/models.py ORM 类 (# 'roles1' > 'roles',# 'users1' > 'users', # 'roles1.id' > 'roles.id')
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    from . import db
+
+    class Role(db.Model):
+    	__tablename__ = 'roles'  # 'roles1' > 'roles'
+    	id = db.Column(db.Integer,primary_key=True)
+    	name = db.Column(db.String(64),unique=True)
+    	users = db.relationship('User',backref='role',lazy='dynamic') # Role 表设置集合属性 users,此处反向往 User实例注入了role 属性
+
+    	def __repr__(self):
+    		return '<Role %r>' % self.name
+
+    class User(db.Model):
+    	__tablename__ = 'users' # 'users1' > 'users'
+    	id = db.Column(db.Integer,primary_key=True)
+    	username = db.Column(db.String(64),unique=True,index=True)
+    	role_id = db.Column(db.Integer,db.ForeignKey('roles.id')) # 'roles1.id' > 'roles.id'
+
+    	def __repr__(self):
+    		return '<User %r>' % self.username
+    ------------------------------------------------------------------------------------------------
+
+    4) 再次执行 ORM 同步到数据库 (发现刚初始化完，根本没有需要同步到数据库的内容)，成功生成了本次迁移脚本 947b90980c6c_init_migrate_script.py,
+      内部成功注册了upgrade downgrade 函数，upgrade() 函数把迁移中的改动应用到数据库中，downgrade() 函数则将改动 删除。
+      Alembic 具有添加和删除改动的能力，因此数据库可重设到修改历史的任意一点。
+    (venv) huhao:flasky huhao$ python manage.py db migrate -m 'init migrate-script'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added table 'roles'
+    INFO  [alembic.autogenerate.compare] Detected added table 'users'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_users_username' on '['username']'
+    INFO  [alembic.autogenerate.compare] Detected removed index 'ix_users1_username' on 'users1'
+    INFO  [alembic.autogenerate.compare] Detected removed table u'users1'
+    INFO  [alembic.autogenerate.compare] Detected removed table u'roles1'  # 删除了表
+        Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/947b90980c6c_init_migrate_script.py ... done
+
+    5) 再次查看数据库中先前存储的模型，发现已经随表的删除，全部消失
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> Role.query.all()
+    OperationalError: (sqlite3.OperationalError) no such table: roles [SQL: u'SELECT roles.id AS roles_id, roles.name AS roles_name \nFROM roles'] (Background on this error at: http://sqlalche.me/e/e3q8)
+
+    6） 重新刷新模型
+    >>> db.create_all()
+    >>> Role.query.all()
+    []
+    >>> str(Role.query)
+    'SELECT roles.id AS roles_id, roles.name AS roles_name \nFROM roles'  # 表已经从先前的 roles1 -> roles
+
+
+    7) 撤销修改 (downgrade)
+    (venv) huhao:flasky huhao$ python manage.py db downgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    (venv) huhao:flasky huhao$ python manage.py shell
+
+    >>> str(Role.query)
+    'SELECT roles1.id AS roles1_id, roles1.name AS roles1_name \nFROM roles1' # 表已经从 roles -> roles1
+    >>> Role.query.all()  # 先前提交的 admin_role 被恢复
+    [<Role u'Admin'>]
+
+    8) 测试 upgrade
+    删除data-dev.sqlite，migrations
+    # 初始化数据库迁移目录
+    (venv) huhao:flasky huhao$ python manage.py db init
+      Creating directory /Users/huhao/software/idea_proj/flasky/migrations ... done
+      Creating directory /Users/huhao/software/idea_proj/flasky/migrations/versions ... done
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/alembic.ini ... done
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/env.py ... done
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/env.pyc ... done
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/README ... done
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/script.py.mako ... done
+      Please edit configuration/connection/logging settings in '/Users/huhao/software/idea_proj/flasky/migrations/alembic.ini' before proceeding.
+
+    # 首次执行同步 (models.py -> db) 相当于 db.create_all()
+    (venv) huhao:flasky huhao$ python manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+
+    # 检测往数据库同步改动效果
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> db
+    <SQLAlchemy engine=sqlite:////Users/huhao/software/idea_proj/flasky/data-dev.sqlite>
+    >>> str(User.query)
+    'SELECT users.id AS users_id, users.username AS users_username, users.role_id AS users_role_id \nFROM users'
+
+    # 第一次创建修改脚本，其命名与提交的 -m 'first' 相关
+    (venv) huhao:flasky huhao$ python manage.py db migrate -m 'first'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added table 'roles1'
+    INFO  [alembic.autogenerate.compare] Detected added table 'users1'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_users1_username' on '['username']'
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/f572b857f791_first.py ... done  # 与 -m 'first' 一致
+
+    # 执行 upgrade 函数，通过修改到数据库
+    (venv) huhao:flasky huhao$ python manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running upgrade  -> f572b857f791, first
+
+    # 查看修改同步效果
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> str(Role.query)
+    'SELECT roles1.id AS roles1_id, roles1.name AS roles1_name \nFROM roles1' # roles -> roles1
+
+    # 添加People类 flasky/app/models.py
+    ------------------------------------------------------------------------------------------------
+    class People(db.Model):
+    	__tablename__ = 'peoples'
+    	id = db.Column(db.Integer,primary_key=True)
+    	name = db.Column(db.String(64),unique=True,index=True)
+
+    	def __repr__(self):
+    		return '<User %r>' % self.name
+    ------------------------------------------------------------------------------------------------
+
+    # 二次生成同步脚本 （注：必须将-m 签名信息错开）
+    (venv) huhao:flasky huhao$ python manage.py db migrate -m 'second'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added table 'peoples'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_peoples_name' on '['name']'
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/ebaafbffb846_second.py ... done # 与 -m 签名相关
+
+    # 执行migrations/versions/ebaafbffb846_second.py 的 upgrade 函数 将修改同步到 db
+    (venv) huhao:flasky huhao$ python manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running upgrade f572b857f791 -> ebaafbffb846, second
+
+    # 检查成功执行了migrations/versions/ebaafbffb846_second.py 的 upgrade 函数，完成了People 类的建模
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> from app.models import People
+    >>> str(People.query)
+    'SELECT peoples.id AS peoples_id, peoples.name AS peoples_name \nFROM peoples'
+
+    # 执行migrations/versions/ebaafbffb846_second.py 的 downgrade 函数 将修改从db撤销
+    (venv) huhao:flasky huhao$ python manage.py db downgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running downgrade ebaafbffb846 -> f572b857f791, second
+
+    # 检测撤销效果，成功执行了 migrations/versions/ebaafbffb846_second.py 的 downgrade 函数，完成了People 类的撤销
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> from app.models import People
+    >>> str(People.query)  # 表面解析仍然顺利
+    'SELECT peoples.id AS peoples_id, peoples.name AS peoples_name \nFROM peoples'
+    >>> People.query.all() # 底层 peoples 表其实已被删除
+    OperationalError: (sqlite3.OperationalError) no such table: peoples [SQL: u'SELECT peoples.id AS peoples_id, peoples.name AS peoples_name \nFROM peoples'] (Background on this error at: http://sqlalche.me/e/e3q8)
+
+
+22. 集成测试类模块
+    1).编辑测试模块 flasky/tests
+        flasky/tests
+            |. __init__.py
+            |. test_basic.py
+
+    test_basic.py
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+
+    """
+    Author: HuHao <huhao1@cmcm.com>
+    Date: '2018/8/25'
+    Info:
+
+    """
+    import unittest
+    from flask import current_app
+    from app import create_app,db
+    from app.models import *
+
+    class BasicsTestCase(unittest.TestCase):
+    	# 启动时，加载测试环境，优先于test_xx 测试函数执行
+    	def setUp(self):
+    		self.app = create_app('testing') # 创建 测试 app
+    		self.app_context = self.app.app_context() # 将 app 实例注册到测试类中
+    		self.app_context.push() # 将 app 实例(上下文) 绑定到当前测试类的 app 中
+    		db.create_all() # 初始化测试数据库文件 data-testing.sqlite
+
+    	# 测试函数执行完毕，销毁环境，回收资源，最后执行
+    	def tearDown(self):
+    		db.session.remove() # 移出 数据库回话session
+    		db.drop_all() # 删除数据库模板
+    		self.app_context.pop() # app 上下文解绑
+
+    	# 以 test_ 前缀开头的都是测试函数，在setUp 和 tearDown 中间执行
+    	def test_app_exists(self):
+    		# 断言已经成功加载了 app上下文
+    		self.assertFalse(current_app is None)
+
+    	def test_app_is_testing(self):
+    		# 断言当前app 配置的是TESTING测试配置
+    		self.assertTrue(current_app.config['TESTING'])
+
+    ------------------------------------------------------------------------------------------------
+
+    2) 启动脚本中，注册测试函数 flasky/manage.py
+    ------------------------------------------------------------------------------------------------
+    @manager.command # 通过 python manage.py test_basic 调用执行 (参数：test_basic 指要调用函数名称)
+    def test_basic():
+    	import unittest
+    	tests = unittest.TestLoader().discover('tests') # 扫描根路径下 tests 目录下的 unittest.TestCase 子类
+    	# 执行测试
+    	unittest.TextTestRunner(verbosity=2).run(tests) # 输出测试案例的执行结果详细程度 verbosity
+
+    ------------------------------------------------------------------------------------------------
+
+    3) 调用测试函数
+    (venv) huhao:flasky huhao$ python manage.py test_basic
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 2 tests in 0.036s
+
+    OK
+
+
+22. 可执行python脚本
+    任何python脚本都应该以如下几句开头，第一句是 shebang 设定，可直接执行 ./manage.py ,第二句是编码约束和出现中文注释
+    ------------------------------------------------------------------------------------------------
+    #!/usr/bin/env python
+    # -*- coding: utf-8 -*-
+    ------------------------------------------------------------------------------------------------
+
+    测试：
+    1）从全局环境跳入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    2）直接运行脚本，测试效果
+    (venv) huhao:flasky huhao$ ./manage.py test_basic
+    test_app_exists (test_basic.BasicsTestCase) ... ok
+    test_app_is_testing (test_basic.BasicsTestCase) ... ok
+
+    ----------------------------------------------------------------------
+    Ran 2 tests in 0.054s
+
+    OK
+    (venv) huhao:flasky huhao$

@@ -1,0 +1,200 @@
+本节功能：博客撰写与阅读权限。
+
+1.修改模型
+    flasky/app/models.py
+    ----------------------------------------------------------------------
+    from datetime import datetime
+    ...
+
+    class Post(db.Model):
+        # 博客
+        __tablename__ = 'posts'
+        id = db.Column(db.Integer, primary_key=True)
+        body = db.Column(db.Text) # 长文本类型
+        timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow) # 默认提交时间，默认为当前操作时间
+        author_id = db.Column(db.Integer, db.ForeignKey('users.id')) # 外键
+
+    class User(UserMixin, db.Model):
+        ...
+        posts = db.relationship('Post', backref='author', lazy='dynamic') # 被 posts 表以 author 字段进行引用
+
+    ----------------------------------------------------------------------
+
+
+2.编辑 博客表单
+    flasky/app/main/forms.py
+    ----------------------------------------------------------------------
+    from flask_wtf import FlaskForm
+    from wtforms import StringField,BooleanField,SubmitField,ValidationError,TextAreaField,SelectField
+    from wtforms.validators import DataRequired,Length,Email,Regexp
+    from ..models import User,Role
+    ...
+
+    class PostForm(FlaskForm):
+    	body = TextAreaField("What's on your mind?", validators=[DataRequired()]) # 文本域
+    	submit = SubmitField('Submit')
+
+    ----------------------------------------------------------------------
+
+
+3.编辑跳转视图业
+     flasky/app/main/views.py
+     ----------------------------------------------------------------------
+     from flask import render_template, redirect, url_for, abort, flash
+     from flask_login import login_required, current_user
+     from . import main
+     from .forms import EditProfileForm, EditProfileAdminForm,PostForm
+     from .. import db
+     from ..models import Role, User,Permission,Post
+     from ..decorators import admin_required
+
+     @main.route('/', methods=['GET', 'POST'])
+     def index():
+        form = PostForm()
+        if current_user.can(Permission.WRITE) and form.validate_on_submit(): # 是否有编辑权限，以及是否通过表单校验 POST
+            post = Post(body=form.body.data,author=current_user._get_current_object()) # 封装 Post 对象
+            db.session.add(post) # 提交保存
+            db.session.commit()
+            return redirect(url_for('.index')) # 重定向返回index页
+        posts = Post.query.order_by(Post.timestamp.desc()).all() #  GET 按时间倒排序
+        return render_template('index.html', form=form, posts=posts)
+
+     ----------------------------------------------------------------------
+
+
+4.index页html模板
+    flasky/app/templates/index.html
+    ----------------------------------------------------------------------
+    {% extends "base.html" %}
+    {% import "bootstrap/wtf.html" as wtf %}
+
+    {% block title %}Flasky{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <h1>Hello, {% if current_user.is_authenticated %}{{ current_user.username }}{% else %}Stranger{% endif %}!</h1>
+        </div>
+        <div>
+            {% if current_user.can(Permission.WRITE) %}
+                {{ wtf.quick_form(form) }}
+            {% endif %}
+        </div>
+        {% include '_posts.html' %}
+    {% endblock %}
+
+    ----------------------------------------------------------------------
+
+    flasky/app/templates/user.html
+    ----------------------------------------------------------------------
+    {% extends "base.html" %}
+
+    {% block title %}Flasky - {{ user.username }}{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <img class="img-rounded profile-thumbnail" src="{{ user.gravatar(size=256) }}">
+            <div class="profile-header">
+                <h1>{{ user.username }}</h1>
+                {% if user.name or user.location %}
+                    <p>
+                        {% if user.name %}{{ user.name }}<br>{% endif %}
+                        {% if user.location %}
+                            from <a href="http://maps.google.com/?q={{ user.location }}">{{ user.location }}</a><br>
+                        {% endif %}
+                    </p>
+                {% endif %}
+                {% if current_user.is_administrator() %}
+                    <p><a href="mailto:{{ user.email }}">{{ user.email }}</a></p>
+                {% endif %}
+                {% if user.about_me %}<p>{{ user.about_me }}</p>{% endif %}
+                <p>Member since {{ moment(user.member_since).format('L') }}. Last seen {{ moment(user.last_seen).fromNow() }}.</p>
+                <p>{{ user.posts.count() }} blog posts.</p> <!-- 发布过总数 -->
+                <p>
+                    {% if user == current_user %}
+                        <a class="btn btn-default" href="{{ url_for('.edit_profile') }}">Edit Profile</a>
+                    {% endif %}
+                    {% if current_user.is_administrator() %}
+                        <a class="btn btn-danger" href="{{ url_for('.edit_profile_admin', id=user.id) }}">Edit Profile [Admin]</a>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+        <h3>Posts by {{ user.username }}</h3>
+        {% include '_posts.html' %} <!-- 内嵌页-->
+    {% endblock %}
+
+    ----------------------------------------------------------------------
+
+    flasky/app/templates/_posts.html
+    ----------------------------------------------------------------------
+    <ul class="posts">
+        {% for post in posts %} <li class="post">
+            <div class="profile-thumbnail">
+                <a href="{{ url_for('.user', username=post.author.username) }}">
+                    <img class="img-rounded profile-thumbnail" src="{{ post.author.gravatar(size=40) }}">
+                </a>
+            </div>
+            <div class="post-date">{{ moment(post.timestamp).fromNow() }}</div>
+            <div class="post-author">
+                <a href="{{ url_for('.user', username=post.author.username) }}">
+                    {{ post.author.username }}
+                </a> </div>
+            <div class="post-body">{{ post.body }}</div>
+        </li>
+        {% endfor %}
+    </ul>
+
+    ----------------------------------------------------------------------
+
+
+5.拷贝静态布局文件 CSS
+    flasky/app/static
+        |. favicon.ico
+        |. styles.css
+
+
+6. 修改启动脚本，注册新增几个模型
+    flasky/manage.py
+    ----------------------------------------------------------------------
+    def make_shell_context():
+    	return dict(app=app,db=db,User=User,Role=Role,Post=Post,Permission=Permission)
+    ----------------------------------------------------------------------
+
+7. 同步模型到数据库
+    # 创建同步脚本
+    (venv) huhao:flasky huhao$ ./manage.py db migrate -m 'add post'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added table 'posts'
+    INFO  [alembic.autogenerate.compare] Detected added index 'ix_posts_timestamp' on '['timestamp']'
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/f32746f92ecc_add_post.py ... done
+
+    # 执行到数据库的同步
+    (venv) huhao:flasky huhao$ ./manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running upgrade a717c856ff4e -> f32746f92ecc, add post
+    (venv) huhao:flasky huhao$
+
+    # 验证
+    (venv) huhao:flasky huhao$ ./manage.py shell
+    >>> str(Post.query)
+    'SELECT posts.id AS posts_id, posts.body AS posts_body, posts.timestamp AS posts_timestamp, posts.author_id AS posts_author_id \nFROM posts'
+    >>>
+
+8. web 测试
+    1) 进入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    2) 运行web服务
+    (venv) huhao:flasky huhao$ ./manage.py runserver --host 127.0.0.1
+    ...
+
+    3) 访问主页 http://127.0.0.1:5000
+
+    4) 点击右上角 "LogIn" 登入，直接进入博客发布页面
+
+    5）尝试正常发布博客，发布成功，被重定向到index页，并按时间倒序排序，注意留意css布局
+
+    6) 进入 Profile 页，查看布局 和 呈现的发布博客数
+

@@ -1,0 +1,126 @@
+本节功能：对注册邮件进行hash加密，从http://www.gravatar.com/avatar 获取唯一图标，展示在Profile页
+
+1.编辑User模型
+    flasky/app/models.py
+    ----------------------------------------------------------------------
+    from flask import current_app,request
+    import hashlib
+    from datetime import datetime
+    ...
+
+    class User(UserMixin, db.Model):
+        ...
+        avatar_hash = db.Column(db.String(32))
+
+        def change_email(self, token):
+            s = Serializer(current_app.config['SECRET_KEY'])
+            try:
+                data = s.loads(token.encode('utf-8'))
+            except:
+                return False
+            if data.get('change_email') != self.id:
+                return False
+            new_email = data.get('new_email')
+            if new_email is None:
+                return False
+            if self.query.filter_by(email=new_email).first() is not None:
+                return False
+            self.email = new_email
+            self.avatar_hash = self.gravatar_hash()
+            db.session.add(self)
+            return True
+
+        def gravatar_hash(self):
+            return hashlib.md5(self.email.lower().encode('utf-8')).hexdigest()
+
+        def gravatar(self, size=100, default='identicon', rating='g'):
+            url = 'https://secure.gravatar.com/avatar'
+            hash = self.avatar_hash or self.gravatar_hash() # 直接取 或 现算
+            return '{url}/{hash}?s={size}&d={default}&r={rating}'.format(url=url, hash=hash, size=size, default=default, rating=rating)
+
+    ----------------------------------------------------------------------
+
+
+2.Profile信息展示html模板
+    flasky/app/templates/user.html
+    ----------------------------------------------------------------------
+    {% extends "base.html" %}
+
+    {% block title %}Flasky - {{ user.username }}{% endblock %}
+
+    {% block page_content %}
+        <div class="page-header">
+            <img class="img-rounded profile-thumbnail" src="{{ user.gravatar(size=128)}}">  <!--图标 -->
+            <div class="profile-header">
+                <h1>{{ user.username }}</h1>
+                {% if user.name or user.location %}
+                    <p>
+                        {% if user.name %}{{ user.name }}<br>{% endif %}
+                        {% if user.location %}
+                            from <a href="http://maps.google.com/?q={{ user.location }}">{{ user.location }}</a><br>
+                        {% endif %}
+                    </p>
+                {% endif %}
+                {% if current_user.is_administrator() %}
+                    <p><a href="mailto:{{ user.email }}">{{ user.email }}</a></p>
+                {% endif %}
+                {% if user.about_me %}<p>{{ user.about_me }}</p>{% endif %}
+                <p>Member since {{ moment(user.member_since).format('L') }}. Last seen {{ moment(user.last_seen).fromNow() }}.</p>
+                <p>
+                    {% if user == current_user %}
+                        <a class="btn btn-default" href="{{ url_for('.edit_profile') }}">Edit Profile</a>
+                    {% endif %}
+                    {% if current_user.is_administrator() %}
+                        <a class="btn btn-danger" href="{{ url_for('.edit_profile_admin', id=user.id) }}">Edit Profile [Admin]</a>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+    {% endblock %}
+
+    ----------------------------------------------------------------------
+
+
+3.模型同步到数据库
+     # 进入虚拟环境
+    huhao:flasky huhao$ source venv/bin/activate
+
+    # 生成迁移脚本
+    (venv) huhao:flasky huhao$ ./manage.py db migrate -m 'add gravatar'
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.autogenerate.compare] Detected added column 'users.avatar_hash'
+      Generating /Users/huhao/software/idea_proj/flasky/migrations/versions/a717c856ff4e_add_gravatar.py ... done
+
+    # 执行往数据库同步迁移命令
+    (venv) huhao:flasky huhao$ ./manage.py db upgrade
+    INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+    INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+    INFO  [alembic.runtime.migration] Running upgrade 92c3beba0325 -> a717c856ff4e, add gravatar
+
+    # 检测是否同步成功
+    (venv) huhao:flasky huhao$ python manage.py shell
+    >>> str(User.query)
+    'SELECT users.id AS users_id, users.email AS users_email, users.username AS users_username, users.role_id AS users_role_id, users.password_hash AS users_password_hash, users.confirmed AS users_confirmed, users.name AS users_name, users.location AS users_location, users.about_me AS users_about_me, users.member_since AS users_member_since, users.last_seen AS users_last_seen, users.avatar_hash AS users_avatar_hash \nFROM users'
+    >>> exit()
+
+
+3.函数测试
+    # hash离散测试
+    ----------------------------------------------------------------------
+    >>> import hashlib
+    >>> hashlib.md5('huhao1@cmcm.com'.encode('utf-8')).hexdigest()
+    '156bb924ca680546425617aac2f2bea7'
+
+    ----------------------------------------------------------------------
+
+    # 基于加密email获取图标
+    >>> u = User(email='john@example.com')
+    >>> u.gravatar()
+    'https://secure.gravatar.com/avatar/d4c74594d841139328695756648b6bd6?s=100&d=identicon&r=g'
+    >>>
+
+4.web测试
+    正常登陆-> 导航栏Profile页，点击进入，就可以看到图标
+
+
