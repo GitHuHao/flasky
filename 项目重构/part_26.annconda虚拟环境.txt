@@ -1,0 +1,21 @@
+本节功能：按照 annconda 以及基于 conda 创建 python2.7 和 python3.6 虚拟环境。
+
+1.下载 https://www.anaconda.com/download/#macos Anaconda3 版本，并安装
+
+2.创建虚拟环境(无需创建目录)
+    (已经登陆bash的，需要重新登陆，更新环境)
+    conda create --name python2.7 python=2.7  >> /Users/huhao/anaconda3/envs/python2.7
+    conda create --name python3.6 python=3.6  >> /Users/huhao/anaconda3/envs/python3.6
+
+3.激活
+    # 当前shell 导入虚拟环境
+    source activate python2.7
+    (python2.7) huhaodeMacBook-Pro:pycharm_proj huhao$
+    # 当前shell 退出虚拟环境
+    (python2.7) huhaodeMacBook-Pro:pycharm_proj huhao$ source deactivate
+
+    source activate python3.6
+    (python3.6) huhaodeMacBook-Pro:pycharm_proj huhao$
+    (python3.6) huhaodeMacBook-Pro:pycharm_proj huhao$ source deactivate
+
+
